@@ -85,16 +85,29 @@ internal val SPEED_OPTIONS = listOf(0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f, 2.5f,
 
 private val PanelShape = RoundedCornerShape(24.dp)
 
+/**
+ * 封面边长占面板宽度的比例。
+ * 高度不够时 [COVER_MIN] / 剩余高度会自动把它压下来，所以这里可以放得比较宽：
+ * 车机 1280×720dp 的右侧栏有 660dp 高，比例太小会让封面缩在中间、上下大片空白。
+ */
+private const val COVER_WIDTH_FRACTION = 0.85f
+
+/** 封面边长下限：再挤也不能缩成邮票 */
+private val COVER_MIN = 150.dp
+
 /** 封面与底部内容之间的最小间距 */
 private val BOTTOM_GAP = 12.dp
 
-/** 底部内容与容器下沿之间的额外余量，避开系统手势条/导航栏 */
-private val BOTTOM_CLEARANCE = 30.dp
+/** 间距上限：富余高度优先给封面，剩下的才摊到间距上，避免封面和内容脱节 */
+private val GAP_MAX = 36.dp
+
+/** 底部内容与容器下沿之间的额外余量（系统手势条由外层 insets 处理，这里只留呼吸空间） */
+private val BOTTOM_CLEARANCE = 12.dp
 
 /** 封面上下的最小边距，避免内容贴到横线或屏幕边缘 */
 private val EDGE_MARGIN = 8.dp
 
-/** 封面边长占「可用高度」的比例，留一点余量避免贴边 */
+/** 封面边长的收尾折扣：让封面离面板边缘留一点呼吸 */
 private const val COVER_FILL = 0.96f
 
 /** 宽屏右侧常驻播放面板（仅在有节目播放且未收起时挂载） */
@@ -143,7 +156,7 @@ fun PlayerSidePane(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
-                .padding(start = 26.dp, end = 26.dp, bottom = 22.dp),
+                .padding(start = 26.dp, end = 26.dp, bottom = 10.dp),
             stretch = true
         )
     }
@@ -153,6 +166,7 @@ fun PlayerSidePane(
  * 窄屏（竖屏 / 分屏半幅）：全屏播放面板。
  * 收起只有「点顶部小横条」这一条路（外加返回键），不做任何拖拽 ——
  * 拖动会和进度条等控件的手势打架，收益不值这个风险。
+ * 横屏（宽 > 高，车机全屏播放就是这种）时改用左右分栏：封面在左、控件在右。
  */
 @Composable
 fun PlayerSheet(
@@ -174,28 +188,129 @@ fun PlayerSheet(
     onClose: () -> Unit
 ) {
     FullScreenPlayerDialog(onClose = onClose) {
-        PlayerPanel(
-            title = title,
-            date = date,
-            isPlaying = isPlaying,
-            positionMs = positionMs,
-            durationMs = durationMs,
+        BoxWithConstraints {
+            val horizontal = maxWidth > maxHeight
+            if (horizontal) {
+                LandscapePlayerContent(
+                    title = title,
+                    date = date,
+                    isPlaying = isPlaying,
+                    positionMs = positionMs,
+                    durationMs = durationMs,
+                    speed = speed,
+                    boost = boost,
+                    onToggle = onToggle,
+                    onSeekTo = onSeekTo,
+                    onSeekBack = onSeekBack,
+                    onSeekForward = onSeekForward,
+                    onSpeed = onSpeed,
+                    onBoost = onBoost,
+                    onRequestTuning = onRequestTuning,
+                    tuningVisible = tuningVisible,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .windowInsetsPadding(WindowInsets.navigationBars)
+                )
+            } else {
+                PlayerPanel(
+                    title = title,
+                    date = date,
+                    isPlaying = isPlaying,
+                    positionMs = positionMs,
+                    durationMs = durationMs,
+                    speed = speed,
+                    boost = boost,
+                    onToggle = onToggle,
+                    onSeekTo = onSeekTo,
+                    onSeekBack = onSeekBack,
+                    onSeekForward = onSeekForward,
+                    onSpeed = onSpeed,
+                    onBoost = onBoost,
+                    onRequestTuning = onRequestTuning,
+                    tuningVisible = tuningVisible,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 26.dp)
+                        // 底部额外留出系统手势条/导航栏的高度，否则底部设置栏会被它压住
+                        .windowInsetsPadding(WindowInsets.navigationBars)
+                        .padding(bottom = 12.dp)
+                )
+            }
+        }
+    }
+}
+
+/** 横屏全屏播放器：左封面右控件的分栏布局，车机矮屏专用 */
+@Composable
+private fun LandscapePlayerContent(
+    title: String,
+    date: String,
+    isPlaying: Boolean,
+    positionMs: Long,
+    durationMs: Long,
+    speed: Float,
+    boost: Int,
+    onToggle: () -> Unit,
+    onSeekTo: (Long) -> Unit,
+    onSeekBack: () -> Unit,
+    onSeekForward: () -> Unit,
+    onSpeed: (Float) -> Unit,
+    onBoost: (Int) -> Unit,
+    onRequestTuning: () -> Unit,
+    tuningVisible: Boolean,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier
+            .padding(horizontal = 34.dp, vertical = 14.dp)
+            .fillMaxSize(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        // 封面：边长按可用高度的 6 成（车机矮屏上吃满高度会压过右侧留白），
+        // 同时不超过宽度的一半，保证右侧控件组有足够空间
+        BoxWithConstraints(Modifier.fillMaxHeight()) {
+            val side = (maxHeight * 0.6f).coerceAtMost(maxWidth / 2)
+            Box(
+                Modifier
+                    .size(side)
+                    .clip(PanelShape)
+            ) {
+                CoverArt(Modifier.fillMaxSize())
+            }
+        }
+        Spacer(Modifier.width(38.dp))
+        Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.Center) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                NowPlaying(title, date, center = true)
+                Scrubber(positionMs, durationMs, onSeekTo, Modifier.padding(top = 14.dp))
+                Controls(
+                    isPlaying = isPlaying,
+                    onToggle = onToggle,
+                    onSeekBack = onSeekBack,
+                    onSeekForward = onSeekForward
+                )
+                Spacer(Modifier.height(BOTTOM_GAP))
+                TuningFooter(
+                    speed = speed,
+                    boost = boost,
+                    enabled = !tuningVisible,
+                    onClick = onRequestTuning
+                )
+            }
+        }
+    }
+    if (tuningVisible) {
+        PlaybackSettingsDialog(
             speed = speed,
             boost = boost,
-            onToggle = onToggle,
-            onSeekTo = onSeekTo,
-            onSeekBack = onSeekBack,
-            onSeekForward = onSeekForward,
             onSpeed = onSpeed,
             onBoost = onBoost,
-            onRequestTuning = onRequestTuning,
-            tuningVisible = tuningVisible,
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 26.dp)
-                // 底部额外留出系统手势条/导航栏的高度，否则底部设置栏会被它压住
-                .windowInsetsPadding(WindowInsets.navigationBars)
-                .padding(bottom = 22.dp)
+            onClose = onRequestTuning
         )
     }
 }
@@ -440,57 +555,84 @@ private fun PlayerPanel(
     modifier: Modifier = Modifier,
     @Suppress("UNUSED_PARAMETER") stretch: Boolean = false
 ) {
-    Layout(
-        modifier = modifier.fillMaxSize(),
-        content = {
-            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                Cover(null)
+    // 极矮面板（封面按下限兜底后仍放不下全部内容）允许纵向滚动，正常尺寸无感。
+    // verticalScroll 会把高度约束变成无穷、居中随之失效（内容顶在上、下面一大片空白），
+    // 所以先用 BoxWithConstraints 拿面板真实高度，再用 heightIn(min=) 传进 Layout 当基准。
+    BoxWithConstraints(modifier.fillMaxSize()) {
+        val panelHeight = maxHeight
+        Column(
+            Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+        ) {
+            Layout(
+                modifier = Modifier.fillMaxWidth().heightIn(min = panelHeight),
+                content = {
+                    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        Cover(null)
+                    }
+                    ContentBlock(
+                        title = title,
+                        date = date,
+                        positionMs = positionMs,
+                        durationMs = durationMs,
+                        isPlaying = isPlaying,
+                        speed = speed,
+                        boost = boost,
+                        tuningVisible = tuningVisible,
+                        onToggle = onToggle,
+                        onSeekTo = onSeekTo,
+                        onSeekBack = onSeekBack,
+                        onSeekForward = onSeekForward,
+                        onRequestTuning = onRequestTuning,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            ) { measurables, constraints ->
+                // 面板高度（px）：滚动时 maxHeight 是无穷，但 heightIn(min=) 让 minHeight 是真实值
+                val target = constraints.minHeight
+                val widthConstraint = constraints.copy(minWidth = 0, minHeight = 0)
+                // 先量「标题/进度/控制/设置栏」
+                val content = measurables[1].measure(widthConstraint)
+                val gapMin = BOTTOM_GAP.roundToPx()
+                val edge = EDGE_MARGIN.roundToPx()
+                val clearance = BOTTOM_CLEARANCE.roundToPx()
+                val usable = (target - edge * 2 - clearance).coerceAtLeast(0)
+                // 封面边长 = min(宽度比例, 剩余高度)，再兜一个下限。
+                // 不按「高/矮面板」分档：剩余高度这一项本身就会在矮面板上把封面压下来，
+                // 少一个魔法阈值就少一种在真实车机密度下翻车的可能。
+                val coverWidthCap = (constraints.maxWidth * COVER_WIDTH_FRACTION).toInt()
+                val heightCap = (usable - content.height - gapMin).coerceAtLeast(0)
+                // 下限：极矮的面板按剩余高度会把封面压成邮票大小，
+                // 保住最小可辨识度，放不下就交给外层滚动
+                val floor = COVER_MIN.roundToPx().coerceAtMost(usable)
+                val lo = floor.coerceAtMost(constraints.maxWidth)
+                val hi = (usable * COVER_FILL).toInt().coerceAtLeast(lo)
+                val side = (minOf(coverWidthCap, maxOf(heightCap, floor)) * COVER_FILL)
+                    .toInt()
+                    .coerceIn(lo, hi)
+                // maxWidth 也锁到 side：Cover 用 fillMaxWidth + aspectRatio(1f)，
+                // 不锁宽的话它会被拉成「面板宽 × side」的扁图
+                val cover = measurables[0].measure(
+                    constraints.copy(
+                        minWidth = 0,
+                        maxWidth = side,
+                        minHeight = side,
+                        maxHeight = side
+                    )
+                )
+                // 富余高度先摊一点到封面与内容的间距上（有上限），剩下的留给上下对称留白，
+                // 这样高面板不会被塞满、矮面板也不会挤成一团
+                val gap = (gapMin + (usable - content.height - cover.height) / 2)
+                    .coerceIn(gapMin, GAP_MAX.roundToPx())
+                val groupHeight = cover.height + gap + content.height
+                // 放得下就整组垂直居中（上下空白对称）；放不下就顶到最上、交给外层滚动
+                val top = ((target - groupHeight) / 2).coerceAtLeast(0)
+                layout(constraints.maxWidth, maxOf(target, groupHeight)) {
+                    cover.place(x = (constraints.maxWidth - cover.width) / 2, y = top)
+                    content.place(x = 0, y = top + cover.height + gap)
+                }
             }
-            ContentBlock(
-                title = title,
-                date = date,
-                positionMs = positionMs,
-                durationMs = durationMs,
-                isPlaying = isPlaying,
-                speed = speed,
-                boost = boost,
-                tuningVisible = tuningVisible,
-                onToggle = onToggle,
-                onSeekTo = onSeekTo,
-                onSeekBack = onSeekBack,
-                onSeekForward = onSeekForward,
-                onRequestTuning = onRequestTuning,
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
-    ) { measurables, constraints ->
-        // 每个 child 只能 measure 一次
-        val widthConstraint = constraints.copy(minWidth = 0, minHeight = 0)
-        // 先量「标题/进度/控制/设置栏」
-        val content = measurables[1].measure(widthConstraint)
-        val gap = BOTTOM_GAP.roundToPx()
-        // 上下各留 EDGE_MARGIN，底部再额外留出手势条/导航栏的余量。
-        // 可用高度由「容器高度 − 这些边距」得出，所以整组内容会整体上移、底部也不会被挡住
-        val edge = EDGE_MARGIN.roundToPx()
-        val clearance = BOTTOM_CLEARANCE.roundToPx()
-        val usable = (constraints.maxHeight - edge * 2 - clearance).coerceAtLeast(0)
-        val side = (
-            minOf(constraints.maxWidth, (usable - content.height - gap).coerceAtLeast(0)) * COVER_FILL
-            ).toInt()
-        val cover = measurables[0].measure(
-            constraints.copy(
-                minWidth = 0,
-                minHeight = side,
-                maxWidth = constraints.maxWidth,
-                maxHeight = side
-            )
-        )
-        // 封面在上、内容贴底；这一组整体垂直居中，剩余空隙由上下边距均分
-        val groupHeight = cover.height + gap + content.height
-        val top = (constraints.maxHeight - groupHeight - clearance) / 2
-        layout(constraints.maxWidth, constraints.maxHeight) {
-            cover.place(x = (constraints.maxWidth - cover.width) / 2, y = top)
-            content.place(x = 0, y = top + cover.height + gap)
         }
     }
 

@@ -67,13 +67,19 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** 达到这个宽度才用三栏（边栏 + 列表 + 播放面板），否则单栏 + 迷你播放条 */
-private val ThreePaneThreshold = 880.dp
+/**
+ * 达到这个宽度就用三栏（边栏 + 列表 + 播放面板），否则单栏 + 迷你播放条。
+ * 车机 DiLink 4.0（1920×1080）按社区实测的 240dpi 算是 1280×720dp，
+ * 三栏能分到侧栏 218 / 列表 678 / 播放 384，很宽松。
+ * 阈值压到 780dp 是为了兼容「密度比 240 更高」的可能——真机密度没实测过之前，
+ * 宁可让更窄的窗口也走三栏，也不要在大屏上退化成单栏。
+ */
+private val ThreePaneThreshold = 780.dp
 
 /**
  * 三栏还要求宽度至少是高度的这个倍数。
- * 车机五五分屏拿到的区域接近方形（如 1920x1080 车机在 1.0x 密度下分屏为 960x675dp），
- * 这种比例下三栏会把列表挤到 420dp 左右，不如走窄屏。
+ * 车机五五分屏拿到的区域接近方形（1280×720dp 分屏后是 640×720dp），
+ * 这种比例下三栏会把列表挤得比手机还窄，不如走窄屏。
  */
 private const val ThreePaneAspect = 1.45f
 
@@ -146,13 +152,12 @@ fun AppScreen(
 
     BoxWithConstraints {
         // 三栏要求「够宽」且「够扁」：
-        // 车机五五分屏常见的 960x675dp（横屏一半）虽然宽度过了 880dp，
-        // 但它接近方形，摆下侧栏+列表+播放面板后中间只剩约 420dp，比手机还窄，
-        // 所以这种尺寸要走窄屏（单栏 + 迷你条）。
+        // 车机分屏后的半幅窗口虽然可能宽度过线，但接近方形，
+        // 摆下侧栏+列表+播放面板后中间列表会比手机还窄，所以这种比例要走窄屏。
         val wide = maxWidth >= ThreePaneThreshold && maxWidth >= maxHeight * ThreePaneAspect
         val landscape = maxWidth > maxHeight
-        val sidebarWidth = (maxWidth * 0.17f).coerceIn(204.dp, 252.dp)
-        val playerWidth = (maxWidth * 0.30f).coerceIn(330.dp, 424.dp)
+        val sidebarWidth = (maxWidth * 0.17f).coerceIn(196.dp, 252.dp)
+        val playerWidth = (maxWidth * 0.30f).coerceIn(320.dp, 424.dp)
 
         Box(
             Modifier
