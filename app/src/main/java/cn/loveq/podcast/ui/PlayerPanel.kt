@@ -4,34 +4,37 @@ package cn.loveq.podcast.ui
 
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.AnimationSpec
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.draggable
-import androidx.compose.foundation.gestures.rememberDraggableState
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -44,11 +47,11 @@ import androidx.compose.material.icons.filled.Replay30
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -59,6 +62,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
@@ -79,6 +83,7 @@ import androidx.compose.ui.window.DialogProperties
 import cn.loveq.podcast.R
 import cn.loveq.podcast.playback.VolumeBoost
 import cn.loveq.podcast.ui.theme.AppColors
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
@@ -130,7 +135,7 @@ fun PlayerSidePane(
             .fillMaxHeight()
             .background(AppColors.Player)
     ) {
-        SheetHandle(onCollapse = onCollapse)
+        SheetHandle(onClick = onCollapse)
         PlayerPanel(
             title = title,
             date = date,
@@ -152,8 +157,8 @@ fun PlayerSidePane(
                 .fillMaxWidth()
                 .padding(start = 26.dp, end = 26.dp, bottom = 22.dp),
             stretch = true,
-            // 常驻侧栏按横条收起即可，封面不做下滑手势（避免和面板横向动画抢手感）
-            onCoverDragDown = null
+            // 常驻侧栏按横条收起即可，封面不做下滑拖动（避免和面板横向动画抢手感）
+            onCoverDrag = null
         )
     }
 }
@@ -205,9 +210,9 @@ fun PlayerSheet(
     }
 }
 
-/** 松手后判定「收起」的距离：面板高度的 30% 或固定 88dp 里取小的那个 */
+/** 松手后判定「收起」的距离：面板高度的 30% 与 84dp 里取小的那个 */
 private fun dismissThresholdFor(panelHeight: Float): Float =
-    if (panelHeight <= 0f) 160f else minOf(panelHeight * 0.3f, 88.dp.value * 3f)
+    if (panelHeight <= 0f) 160f else minOf(panelHeight * 0.3f, 84f * 3f)
 
 /**
  * 自带跟手拖动的底部滑层（替代 ModalBottomSheet）。
@@ -223,67 +228,71 @@ private fun ContentSheet(
 ) {
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current
-    val dragOffset = remember { Animatable(0f) }
+    // 拖动位移：必须能同步改，所以用普通 float state（Animatable 的 snapTo 是挂起的，
+    // 走协程会让跟手变成「追手」）
+    var offset by remember { mutableFloatStateOf(4096f) }
     var entryHeight by remember { mutableStateOf(0f) }
-    var dragging by remember { mutableStateOf(false) }
-    var entryDone by remember { mutableStateOf(false) }
+    var settling by remember { mutableStateOf(false) }
+    var entryStarted by remember { mutableStateOf(false) }
     var dismissed by remember { mutableStateOf(false) }
+    // 回弹 / 收起的动画任务：手指再按下来时要能取消，否则会「动画抢手指」
+    var settleJob by remember { mutableStateOf<Job?>(null) }
 
-    // 接近全屏的判定阈值换成像素（按 1:1 经验值折算，避免用屏幕密度反复算）
-    val positionalThresholdPx = with(density) { 88.dp.toPx() }
-    val velocityThresholdPx = with(density) { 520.dp.toPx() }
-    val spring = remember {
-        spring<Float>(dampingRatio = 0.82f, stiffness = 420f)
+    val velocityThresholdPx = with(density) { 720.dp.toPx() }
+    val extraTravel = 48f * density.density
+    val travel = { if (entryHeight > 0f) entryHeight else 640f * density.density }
+    val spring = spring<Float>(dampingRatio = 0.82f, stiffness = 420f)
+
+    /** 把位移从当前位置滑到 [target]（松手回弹 / 滑出去收起 / 进场） */
+    suspend fun slideTo(target: Float, spec: AnimationSpec<Float>) {
+        androidx.compose.animation.core.animate(
+            initialValue = offset,
+            targetValue = target,
+            animationSpec = spec
+        ) { value, _ -> offset = value }
     }
 
-    // 首帧量到面板高度后，让它从屏幕外滑进来
+    // 首帧量到面板高度后，把它从屏幕外滑进来
     LaunchedEffect(entryHeight) {
-        if (!entryDone && entryHeight > 0f) {
-            entryDone = true
-            dragOffset.snapTo(entryHeight)
-            dragOffset.animateTo(0f, spring)
+        if (!entryStarted && entryHeight > 0f) {
+            entryStarted = true
+            slideTo(0f, spring)
         }
     }
 
-    val exit: suspend () -> Unit = {
-        val travel = if (entryHeight > 0f) entryHeight else with(density) { 640.dp.toPx() }
-        dragOffset.animateTo(travel + with(density) { 48.dp.toPx() }, tween(220))
-    }
-
-    /** 松手 / 点横条后的收尾：够远就滑出去关掉，否则弹回原位 */
-    val settle: (velocity: Float) -> Unit = { velocity ->
-        scope.launch {
-            dragging = false
-            val height = if (entryHeight > 0f) entryHeight else with(density) { 640.dp.toPx() }
-            val threshold = minOf(height * 0.3f, positionalThresholdPx)
-            val shouldClose = dragOffset.value > threshold || velocity > velocityThresholdPx
-            if (shouldClose) {
-                if (!dismissed) {
+    /** 松手（或点横条 / 点遮罩）后的判定：够远、甩得够快，或者点了遮罩，就收起；否则弹回 */
+    val settle: (fling: Float, forceClose: Boolean) -> Unit = { fling, forceClose ->
+        if (!settling && !dismissed) {
+            settling = true
+            val shouldClose = forceClose ||
+                offset > dismissThresholdFor(entryHeight) ||
+                fling > velocityThresholdPx
+            settleJob = scope.launch {
+                if (shouldClose) {
                     dismissed = true
-                    exit()
+                    runCatching { slideTo(travel() + extraTravel, tween(220)) }
                     onClose()
+                } else {
+                    slideTo(0f, spring)
+                    settling = false
                 }
-            } else {
-                dragOffset.animateTo(0f, spring)
             }
         }
         Unit
     }
 
+    /** 拖动中：面板 1:1 跟着手指走；这之前先把还没走完的回弹动画掐掉 */
     val onDrag: (Float) -> Unit = { delta ->
-        scope.launch {
-            dragging = true
-            val height = if (entryHeight > 0f) entryHeight else with(density) { 640.dp.toPx() }
-            dragOffset.snapTo((dragOffset.value + delta).coerceIn(0f, height + with(density) { 48.dp.toPx() }))
+        if (!dismissed) {
+            settleJob?.cancel()
+            settleJob = null
+            settling = false
+            offset = (offset + delta).coerceIn(0f, travel() + extraTravel)
         }
-        Unit
     }
 
-    val slide by dragOffset.asState()
-    val scrimAlpha = if (entryHeight > 0f && dragging) {
-        (1f - slide / (entryHeight * 0.55f)).coerceIn(0f, 1f) * 0.42f
-    } else if (dragging) {
-        0.42f
+    val scrimAlpha = if (entryHeight > 0f) {
+        (1f - offset / (entryHeight * 0.6f)).coerceIn(0f, 1f) * 0.42f
     } else {
         0.42f
     }
@@ -297,22 +306,22 @@ private fun ContentSheet(
                 Modifier
                     .fillMaxSize()
                     .background(Color.Black.copy(alpha = scrimAlpha))
-                    .clickable { settle(Float.MAX_VALUE) }
+                    .clickable { settle(0f, true) }
             )
             Column(
                 Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
                     .onSizeChanged { entryHeight = it.height.toFloat() }
-                    .graphicsLayer { translationY = slide }
+                    .graphicsLayer { translationY = offset }
                     .clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp))
                     .background(AppColors.Player)
                     .windowInsetsPadding(WindowInsets.navigationBars)
             ) {
                 SheetHandle(
-                    onClick = { settle(Float.MAX_VALUE) },
+                    onClick = { settle(0f, true) },
                     onDrag = onDrag,
-                    onDragEnd = settle
+                    onDragEnd = { fling -> settle(fling, false) }
                 )
                 content(onDrag)
             }
@@ -327,8 +336,8 @@ private fun ContentSheet(
 @Composable
 private fun SheetHandle(
     onClick: () -> Unit,
-    onDrag: (Float) -> Unit,
-    onDragEnd: (Float) -> Unit
+    onDrag: (Float) -> Unit = {},
+    onDragEnd: (Float) -> Unit = {}
 ) {
     Box(
         Modifier
@@ -562,7 +571,8 @@ private fun PlayerPanel(
     tuningVisible: Boolean,
     modifier: Modifier = Modifier,
     stretch: Boolean = false,
-    onCoverDragDown: (() -> Unit)? = null
+    /** 滑层里传下来的纵向拖动回调（面板跟手平移）；常驻侧栏传 null */
+    onCoverDrag: ((Float) -> Unit)? = null
 ) {
     if (stretch) {
         val density = LocalDensity.current
@@ -582,7 +592,7 @@ private fun PlayerPanel(
                     Modifier.weight(1f),
                     contentAlignment = Alignment.Center
                 ) {
-                    Cover(artSize, onCoverDragDown)
+                    Cover(artSize, onCoverDrag)
                 }
                 ContentBlock(
                     title = title,
@@ -607,7 +617,7 @@ private fun PlayerPanel(
             modifier.verticalScroll(rememberScrollState()),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Cover(null, onCoverDragDown)
+            Cover(null, onCoverDrag)
             ContentBlock(
                 title = title,
                 date = date,
@@ -686,14 +696,14 @@ private fun ContentBlock(
 /**
  * 封面固定正方形：给了 artSize 就精确用这个边长（只挂 size 一个尺寸修饰符），
  * 否则铺满可用宽度（此时才用 aspectRatio）。两者绝不同时出现，避免互相打架。
- * [onDragDown] 非空时（底部滑层）封面就是「下滑收起」的入口之一。
+ * [onDrag] 非空时（底部滑层）封面就是拖动收起的入口。
  */
 @Composable
-private fun Cover(artSize: Dp? = null, onDragDown: (() -> Unit)? = null) {
-    val dropHandler = Modifier.dropToCollapse(onDragDown != null) { onDragDown?.invoke() }
+private fun Cover(artSize: Dp? = null, onDrag: ((Float) -> Unit)? = null) {
+    val dragHandler = Modifier.sheetDragHandle(onDrag ?: {}, {})
     val shape = Modifier
         .then(if (artSize != null) Modifier.size(artSize) else Modifier.fillMaxWidth())
-        .then(dropHandler)
+        .then(if (onDrag != null) dragHandler else Modifier)
         .clip(PanelShape)
     if (artSize != null) {
         CoverArt(shape)
