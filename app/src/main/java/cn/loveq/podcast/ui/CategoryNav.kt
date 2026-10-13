@@ -134,15 +134,13 @@ fun Sidebar(
             }
         }
 
-        Row(
-            Modifier
-                .padding(top = 12.dp)
-                .heightIn(min = 44.dp),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        Column(
+            Modifier.padding(top = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            SideTool(Icons.Filled.Search, "搜索", onSearch, Modifier.weight(1f))
-            SideTool(Icons.Filled.CalendarMonth, "年份", onYear, Modifier.weight(1f))
-            SideTool(Icons.Filled.Storage, "缓存", onCache, Modifier.weight(1f))
+            SideTool(Icons.Filled.Search, "搜索", onSearch)
+            SideTool(Icons.Filled.CalendarMonth, "年份", onYear)
+            SideTool(Icons.Filled.Storage, "缓存", onCache)
         }
         Text(
             cacheLabel ?: "缓存统计中…",
@@ -201,6 +199,7 @@ private fun NavItem(
     }
 }
 
+/** 边栏工具项：通栏胶囊，一行一个；高度对齐分类项，车机上好按 */
 @Composable
 private fun SideTool(
     icon: ImageVector,
@@ -210,16 +209,27 @@ private fun SideTool(
 ) {
     Row(
         modifier
-            .clip(RoundedCornerShape(12.dp))
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
+            .clip(RoundedCornerShape(14.dp))
             .background(Color.White.copy(alpha = 0.6f))
             .clickable(onClick = onClick)
-            .padding(vertical = 11.dp),
-        horizontalArrangement = Arrangement.Center,
+            .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(icon, contentDescription = null, tint = AppColors.Body, modifier = Modifier.size(17.dp))
-        Spacer(Modifier.width(5.dp))
-        Text(label, style = MaterialTheme.typography.labelMedium, color = AppColors.Body)
+        Icon(
+            icon,
+            contentDescription = null,
+            tint = AppColors.Body,
+            modifier = Modifier.size(21.dp)
+        )
+        Spacer(Modifier.width(12.dp))
+        Text(
+            label,
+            style = MaterialTheme.typography.bodyLarge,
+            color = AppColors.Body,
+            maxLines = 1
+        )
     }
 }
 
