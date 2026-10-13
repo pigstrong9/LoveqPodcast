@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.LoveqPodcast" parent="android:Theme.Material.NoActionBar">
+    <!-- 界面固定使用品牌浅色观感，深色播放面板是组件级配色，不跟随系统深色模式 -->
+    <style name="Theme.LoveqPodcast" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/app_canvas</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
     </style>
 </resources>

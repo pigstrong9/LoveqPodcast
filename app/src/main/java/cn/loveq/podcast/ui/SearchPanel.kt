@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -59,6 +60,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import cn.loveq.podcast.data.Episode
 import cn.loveq.podcast.data.Progress
+import cn.loveq.podcast.ui.theme.AppColors
 
 /**
  * 搜索 + 收听历史面板。空关键字显示历史，输入即搜全库（2300+ 期）。
@@ -78,13 +80,13 @@ fun SearchPanel(
 ) {
     Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(
-            shape = RoundedCornerShape(28.dp),
-            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            shape = RoundedCornerShape(24.dp),
+            color = AppColors.Canvas,
             modifier = Modifier
-                .fillMaxWidth()
                 .padding(horizontal = 24.dp)
-                .widthIn(max = 640.dp)
-                .heightIn(min = 420.dp, max = 660.dp)
+                .widthIn(max = 680.dp)
+                .fillMaxWidth()
+                .heightIn(min = 420.dp, max = 700.dp)
         ) {
             Column(Modifier.fillMaxSize()) {
                 SearchField(query = query, onQueryChange = onQueryChange, onClose = onClose)
@@ -92,7 +94,8 @@ fun SearchPanel(
                     LinearProgressIndicator(
                         Modifier
                             .fillMaxWidth()
-                            .height(3.dp)
+                            .height(3.dp),
+                        color = AppColors.Red
                     )
                 }
                 if (query.isBlank()) {
@@ -160,6 +163,12 @@ private fun HistoryContent(history: List<Progress>, onPlay: (Long) -> Unit) {
             else -> history
         }
     }
+    val chipColors = FilterChipDefaults.filterChipColors(
+        selectedContainerColor = AppColors.RedMist,
+        selectedLabelColor = AppColors.RedDeep,
+        containerColor = AppColors.Card,
+        labelColor = AppColors.Body
+    )
 
     Column(Modifier.fillMaxSize()) {
         Row(
@@ -191,18 +200,21 @@ private fun HistoryContent(history: List<Progress>, onPlay: (Long) -> Unit) {
                 selected = filter == 0,
                 onClick = { filter = 0 },
                 label = { Text("全部") },
+                colors = chipColors,
                 shape = RoundedCornerShape(12.dp)
             )
             FilterChip(
                 selected = filter == 1,
                 onClick = { filter = 1 },
                 label = { Text("在听") },
+                colors = chipColors,
                 shape = RoundedCornerShape(12.dp)
             )
             FilterChip(
                 selected = filter == 2,
                 onClick = { filter = 2 },
                 label = { Text("听完") },
+                colors = chipColors,
                 shape = RoundedCornerShape(12.dp)
             )
         }

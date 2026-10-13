@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="ic_launcher_background">#E50012</color>
+    <color name="app_canvas">#F6F3F7</color>
 </resources>
