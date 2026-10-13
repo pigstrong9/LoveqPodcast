@@ -61,6 +61,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
@@ -83,35 +84,11 @@ internal val SPEED_OPTIONS = listOf(0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f, 2.5f,
 
 private val PanelShape = RoundedCornerShape(24.dp)
 
-/** 控制键与底部设置栏之间的固定小间距，取代原来的空白弹簧 */
+/** 封面与底部内容之间的最小间距 */
 private val BOTTOM_GAP = 12.dp
 
-/**
- * 封面边长占容器可用高度的比例。
- * 固定内容（标题+日期+进度+控制键+底部设置栏）实测约 300dp：
- * - 常驻侧栏（真机 384×800dp）：封面上限取 45%，不会压住标题、也不挤掉底部设置栏
- * - 底部滑层（竖屏/窄屏）：四周可用空间更紧，且要顺带收紧两侧留白，取 40%
- */
-private const val COVER_HEIGHT_FRACTION = 0.45f
-private const val COVER_HEIGHT_FRACTION_SHEET = 0.40f
-
-private val CONTENT_MIN_HEIGHT = 300.dp
-
-/**
- * 封面是正方形，边长同时受容器宽高约束：
- * 宽度取 92%（留两侧安全边距），高度取比例上限；
- * 两个方向都算一遍再取小值，所以横屏、竖屏、分屏半幅都不会出现大片空白。
- */
-private fun coverSize(boxSize: IntSize, density: Density, resident: Boolean, margin: Dp = 0.dp): Dp {
-    if (boxSize == IntSize.Zero) return 140.dp
-    val width = with(density) { boxSize.width.toDp() } - margin * 2
-    val height = with(density) { boxSize.height.toDp() }
-    val byWidth = width * if (resident) 0.92f else 1f
-    val byHeight = (height - CONTENT_MIN_HEIGHT) * 1.05f
-    val cap = height * if (resident) COVER_HEIGHT_FRACTION else COVER_HEIGHT_FRACTION_SHEET
-    val side = minOf(byWidth, byHeight, cap)
-    return side.coerceAtLeast(120.dp)
-}
+/** 封面边长占「可用高度」的比例，留一点余量避免贴边 */
+private const val COVER_FILL = 0.96f
 
 /** 宽屏右侧常驻播放面板（仅在有节目播放且未收起时挂载） */
 @Composable
@@ -407,8 +384,12 @@ private fun TuningContent(
 }
 
 /**
- * stretch=true 时是三栏常驻面板的竖向布局：封面区吃掉剩余高度、封面居中，
- * 标题/进度/控制/设置栏依次排在下面；否则跟随宽度铺满并可滚动。
+ * 播放面板：横竖屏、常驻侧栏与全屏滑层共用同一套布局。
+ *
+ * 用一次自定义测量同时得到「固定内容的真实高度」和「容器宽高」，然后：
+ * 封面边长 = min(可用宽度, 可用高度 − 固定内容高度) —— 剩余空间全给封面，
+ * 因此既不会在封面上下留出大片空白（封面会跟着长大），
+ * 也不会把底部设置栏挤出屏幕（固定内容按实测高度预留）。
  */
 @Composable
 private fun PlayerPanel(
@@ -428,29 +409,14 @@ private fun PlayerPanel(
     onRequestTuning: () -> Unit,
     tuningVisible: Boolean,
     modifier: Modifier = Modifier,
-    stretch: Boolean = false
+    @Suppress("UNUSED_PARAMETER") stretch: Boolean = false
 ) {
-    // 横竖屏统一用同一套自适应布局：封面按「容器宽高 + 是否常驻」推导边长，
-    // 内容贴着底部、剩余空间全给封面，所以不会出现底部或两侧大片空白
-    val density = LocalDensity.current
-    var boxSize by remember { mutableStateOf(IntSize.Zero) }
-    val artSize = coverSize(boxSize, density, resident = stretch)
-    Box(
-        modifier
-            .fillMaxSize()
-            .onSizeChanged { boxSize = it }
-    ) {
-        Column(
-            Modifier.fillMaxSize(),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            // 封面区拿走剩余高度，封面在其中居中
-            Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
-                Cover(artSize)
+    Layout(
+        modifier = modifier.fillMaxSize(),
+        content = {
+            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                Cover(null)
             }
-            // 控制键与底部设置栏之间再放一个轻量弹簧：剩余高度按 3:1 分给封面区与这里，
-            // 底部不会空出一大块，控件也不会全挤在顶端
-            Spacer(Modifier.weight(0.34f))
             ContentBlock(
                 title = title,
                 date = date,
@@ -467,6 +433,32 @@ private fun PlayerPanel(
                 onRequestTuning = onRequestTuning,
                 modifier = Modifier.fillMaxWidth()
             )
+        }
+    ) { measurables, constraints ->
+        // 每个 child 只能 measure 一次
+        val widthConstraint = constraints.copy(minWidth = 0, minHeight = 0)
+        // 先量「标题/进度/控制/设置栏」，剩余高度才是封面能用的
+        val content = measurables[1].measure(widthConstraint)
+        val gap = BOTTOM_GAP.roundToPx()
+        val side = (
+            minOf(
+                constraints.maxWidth,
+                (constraints.maxHeight - content.height - gap).coerceAtLeast(0)
+            ) * COVER_FILL
+            ).toInt()
+        val cover = measurables[0].measure(
+            constraints.copy(
+                minWidth = 0,
+                minHeight = side,
+                maxWidth = constraints.maxWidth,
+                maxHeight = side
+            )
+        )
+        // 封面在上、内容贴底，剩余空隙留在封面下方
+        val slack = (constraints.maxHeight - content.height - cover.height - gap).coerceAtLeast(0)
+        layout(constraints.maxWidth, constraints.maxHeight) {
+            cover.place(x = (constraints.maxWidth - cover.width) / 2, y = slack / 2)
+            content.place(x = 0, y = constraints.maxHeight - content.height)
         }
     }
 
@@ -564,7 +556,7 @@ private fun NowPlaying(title: String, date: String, center: Boolean = false) {
     Column(
         Modifier
             .fillMaxWidth()
-            .padding(top = 18.dp),
+            .padding(top = 12.dp),
         horizontalAlignment = alignment
     ) {
         Text(
@@ -600,7 +592,7 @@ private fun Controls(
     Row(
         modifier
             .fillMaxWidth()
-            .padding(top = 18.dp),
+            .padding(top = 12.dp),
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically
     ) {
