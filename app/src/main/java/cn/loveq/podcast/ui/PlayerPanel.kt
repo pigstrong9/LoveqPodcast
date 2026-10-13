@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -86,6 +87,9 @@ private val PanelShape = RoundedCornerShape(24.dp)
 
 /** 封面与底部内容之间的最小间距 */
 private val BOTTOM_GAP = 12.dp
+
+/** 底部内容与容器下沿之间的额外余量，避开系统手势条/导航栏 */
+private val BOTTOM_CLEARANCE = 30.dp
 
 /** 封面边长占「可用高度」的比例，留一点余量避免贴边 */
 private const val COVER_FILL = 0.96f
@@ -183,7 +187,12 @@ fun PlayerSheet(
             onBoost = onBoost,
             onRequestTuning = onRequestTuning,
             tuningVisible = tuningVisible,
-            modifier = Modifier.fillMaxSize().padding(horizontal = 26.dp).padding(bottom = 26.dp)
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 26.dp)
+                // 底部额外留出系统手势条/导航栏的高度，否则底部设置栏会被它压住
+                .windowInsetsPadding(WindowInsets.navigationBars)
+                .padding(bottom = 22.dp)
         )
     }
 }
@@ -454,11 +463,16 @@ private fun PlayerPanel(
                 maxHeight = side
             )
         )
-        // 封面在上、内容贴底，剩余空隙留在封面下方
-        val slack = (constraints.maxHeight - content.height - cover.height - gap).coerceAtLeast(0)
+        // 封面在上、内容贴底，剩余空隙留在封面下方。
+        // 额外再抬 BOTTOM_CLEARANCE：全屏滑层底下是系统手势条/导航栏，
+        // 不留这点余量时底部设置栏的下沿会被它压住
+        val clearance = BOTTOM_CLEARANCE.roundToPx()
+        val slack = (
+            constraints.maxHeight - content.height - cover.height - gap - clearance
+            ).coerceAtLeast(0)
         layout(constraints.maxWidth, constraints.maxHeight) {
             cover.place(x = (constraints.maxWidth - cover.width) / 2, y = slack / 2)
-            content.place(x = 0, y = constraints.maxHeight - content.height)
+            content.place(x = 0, y = constraints.maxHeight - content.height - clearance)
         }
     }
 
