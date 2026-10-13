@@ -95,6 +95,9 @@ private const val COVER_WIDTH_FRACTION = 0.85f
 /** 封面边长下限：再挤也不能缩成邮票 */
 private val COVER_MIN = 150.dp
 
+/** 极矮面板（如 360dp 高的分屏窄条）的封面下限：保住播放键在首屏可见比封面大小更重要 */
+private val COVER_MIN_SHORT = 96.dp
+
 /** 封面与底部内容之间的最小间距 */
 private val BOTTOM_GAP = 12.dp
 
@@ -604,8 +607,13 @@ private fun PlayerPanel(
                 val coverWidthCap = (constraints.maxWidth * COVER_WIDTH_FRACTION).toInt()
                 val heightCap = (usable - content.height - gapMin).coerceAtLeast(0)
                 // 下限：极矮的面板按剩余高度会把封面压成邮票大小，
-                // 保住最小可辨识度，放不下就交给外层滚动
-                val floor = COVER_MIN.roundToPx().coerceAtMost(usable)
+                // 保住最小可辨识度，放不下就交给外层滚动。
+                // 下限本身也随面板高度收缩：360dp 高的分屏窄条里，
+                // 让播放键留在首屏比封面体面更重要。
+                val floor = maxOf(
+                    COVER_MIN_SHORT.roundToPx(),
+                    minOf(COVER_MIN.roundToPx(), (usable * 0.30f).toInt())
+                ).coerceAtMost(usable)
                 val lo = floor.coerceAtMost(constraints.maxWidth)
                 val hi = (usable * COVER_FILL).toInt().coerceAtLeast(lo)
                 val side = (minOf(coverWidthCap, maxOf(heightCap, floor)) * COVER_FILL)
