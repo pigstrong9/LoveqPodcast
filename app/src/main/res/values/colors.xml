@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="ic_launcher_background">#E50012</color>
+    <!-- 自适应图标底色：logo 本身是白底红字，所以底色也用白色 -->
+    <color name="ic_launcher_background">#FFFFFF</color>
     <color name="app_canvas">#F6F3F7</color>
 </resources>
