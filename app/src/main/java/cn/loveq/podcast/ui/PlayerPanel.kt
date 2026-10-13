@@ -6,6 +6,7 @@ import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.AnimationSpec
 import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -228,71 +229,64 @@ private fun ContentSheet(
 ) {
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current
-    // 拖动位移：必须能同步改，所以用普通 float state（Animatable 的 snapTo 是挂起的，
-    // 走协程会让跟手变成「追手」）
-    var offset by remember { mutableFloatStateOf(4096f) }
-    var entryHeight by remember { mutableStateOf(0f) }
-    var settling by remember { mutableStateOf(false) }
-    var entryStarted by remember { mutableStateOf(false) }
-    var dismissed by remember { mutableStateOf(false) }
-    // 回弹 / 收起的动画任务：手指再按下来时要能取消，否则会「动画抢手指」
-    var settleJob by remember { mutableStateOf<Job?>(null) }
+    // 拖动位移。用普通 float state：跟手必须能同步改；动画（进场 / 回弹 / 收起）也用
+    // 同一个变量作为目标，再由 animate 逐帧写回来，这样手指随时能接管。
+    var offset by remember { mutableFloatStateOf(0f) }
+    var panelHeight by remember { mutableStateOf(0f) }
+    var entryPlayed by remember { mutableStateOf(false) }
+    var dismissing by remember { mutableStateOf(false) }
+    // 当前动画任务：手指按下 / 重新拖动时取消，避免动画和手指抢
+    var animJob by remember { mutableStateOf<Job?>(null) }
 
     val velocityThresholdPx = with(density) { 720.dp.toPx() }
     val extraTravel = 48f * density.density
-    val travel = { if (entryHeight > 0f) entryHeight else 640f * density.density }
+    val travel = { if (panelHeight > 0f) panelHeight else 640f * density.density }
     val spring = spring<Float>(dampingRatio = 0.82f, stiffness = 420f)
 
-    /** 把位移从当前位置滑到 [target]（松手回弹 / 滑出去收起 / 进场） */
-    suspend fun slideTo(target: Float, spec: AnimationSpec<Float>) {
-        androidx.compose.animation.core.animate(
-            initialValue = offset,
-            targetValue = target,
-            animationSpec = spec
-        ) { value, _ -> offset = value }
-    }
-
-    // 首帧量到面板高度后，把它从屏幕外滑进来
-    LaunchedEffect(entryHeight) {
-        if (!entryStarted && entryHeight > 0f) {
-            entryStarted = true
-            slideTo(0f, spring)
+    // 首帧量到面板高度后，从屏幕外滑进来
+    LaunchedEffect(panelHeight) {
+        if (!entryPlayed && panelHeight > 0f) {
+            entryPlayed = true
+            offset = panelHeight
+            animJob = scope.launch {
+                animate(offset, 0f, 0f, spring) { value, _ -> offset = value }
+            }
         }
     }
 
     /** 松手（或点横条 / 点遮罩）后的判定：够远、甩得够快，或者点了遮罩，就收起；否则弹回 */
     val settle: (fling: Float, forceClose: Boolean) -> Unit = { fling, forceClose ->
-        if (!settling && !dismissed) {
-            settling = true
+        if (!dismissing) {
             val shouldClose = forceClose ||
-                offset > dismissThresholdFor(entryHeight) ||
+                offset > dismissThresholdFor(panelHeight) ||
                 fling > velocityThresholdPx
-            settleJob = scope.launch {
-                if (shouldClose) {
-                    dismissed = true
-                    runCatching { slideTo(travel() + extraTravel, tween(220)) }
+            animJob?.cancel()
+            if (shouldClose) {
+                dismissing = true
+                animJob = scope.launch {
+                    animate(offset, travel() + extraTravel, 0f, tween(200)) { value, _ -> offset = value }
                     onClose()
-                } else {
-                    slideTo(0f, spring)
-                    settling = false
+                }
+            } else {
+                animJob = scope.launch {
+                    animate(offset, 0f, 0f, spring) { value, _ -> offset = value }
                 }
             }
         }
         Unit
     }
 
-    /** 拖动中：面板 1:1 跟着手指走；这之前先把还没走完的回弹动画掐掉 */
+    /** 拖动中：面板 1:1 跟着手指走；先把没走完的动画掐掉 */
     val onDrag: (Float) -> Unit = { delta ->
-        if (!dismissed) {
-            settleJob?.cancel()
-            settleJob = null
-            settling = false
+        if (!dismissing) {
+            animJob?.cancel()
+            animJob = null
             offset = (offset + delta).coerceIn(0f, travel() + extraTravel)
         }
     }
 
-    val scrimAlpha = if (entryHeight > 0f) {
-        (1f - offset / (entryHeight * 0.6f)).coerceIn(0f, 1f) * 0.42f
+    val scrimAlpha = if (panelHeight > 0f) {
+        (1f - offset / (panelHeight * 0.6f)).coerceIn(0f, 1f) * 0.42f
     } else {
         0.42f
     }
@@ -302,9 +296,11 @@ private fun ContentSheet(
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
         Box(Modifier.fillMaxSize()) {
+            // 遮罩固定 2000dp 高、顶部对齐，永远铺满面板上方而不会盖在面板上抢走点击
             Box(
                 Modifier
-                    .fillMaxSize()
+                    .fillMaxWidth()
+                    .height(2000.dp)
                     .background(Color.Black.copy(alpha = scrimAlpha))
                     .clickable { settle(0f, true) }
             )
@@ -312,7 +308,7 @@ private fun ContentSheet(
                 Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
-                    .onSizeChanged { entryHeight = it.height.toFloat() }
+                    .onSizeChanged { panelHeight = it.height.toFloat() }
                     .graphicsLayer { translationY = offset }
                     .clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp))
                     .background(AppColors.Player)
@@ -1076,7 +1072,7 @@ fun MiniPlayer(
                 onSeekBack = onSeekBack,
                 onSeekForward = onSeekForward,
                 onOpen = onOpen,
-                modifier = modifier.widthIn(max = 640.dp)
+                modifier = modifier.widthIn(max = 760.dp)
             )
         }
         return
@@ -1111,11 +1107,11 @@ private fun MiniPill(
 ) {
     Row(
         modifier
-            .padding(horizontal = 20.dp, vertical = 10.dp)
-            .clip(RoundedCornerShape(22.dp))
+            .padding(horizontal = 20.dp, vertical = 12.dp)
+            .clip(RoundedCornerShape(28.dp))
             .background(AppColors.Player)
             .clickable(onClick = onOpen)
-            .padding(start = 8.dp, end = 12.dp, top = 8.dp, bottom = 8.dp),
+            .padding(start = 10.dp, end = 14.dp, top = 12.dp, bottom = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Image(
@@ -1123,14 +1119,14 @@ private fun MiniPill(
             contentDescription = null,
             contentScale = ContentScale.Crop,
             modifier = Modifier
-                .size(40.dp)
-                .clip(RoundedCornerShape(11.dp))
+                .size(56.dp)
+                .clip(RoundedCornerShape(15.dp))
         )
-        Spacer(Modifier.width(11.dp))
+        Spacer(Modifier.width(14.dp))
         Column(Modifier.weight(1f)) {
             Text(
                 title.ifBlank { "正在加载…" },
-                style = MaterialTheme.typography.titleSmall,
+                style = MaterialTheme.typography.titleMedium,
                 color = AppColors.PlayerTitle,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -1140,23 +1136,23 @@ private fun MiniPill(
                     append(formatMillis(positionMs))
                     if (durationMs > 0) append(" / ").append(formatMillis(durationMs))
                 },
-                style = MaterialTheme.typography.labelSmall,
+                style = MaterialTheme.typography.labelMedium,
                 color = AppColors.PlayerSub,
                 maxLines = 1,
-                modifier = Modifier.padding(top = 2.dp)
+                modifier = Modifier.padding(top = 3.dp)
             )
         }
         TuningBadges(speed = speed, boost = boost)
-        Spacer(Modifier.width(10.dp))
+        Spacer(Modifier.width(12.dp))
         PillIconButton(
             icon = Icons.Filled.Replay30,
             contentDescription = "后退 30 秒",
             onClick = onSeekBack
         )
-        Spacer(Modifier.width(4.dp))
+        Spacer(Modifier.width(6.dp))
         Box(
             Modifier
-                .size(40.dp)
+                .size(60.dp)
                 .clip(CircleShape)
                 .background(Color.White)
                 .clickable(onClick = onToggle),
@@ -1166,10 +1162,10 @@ private fun MiniPill(
                 if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
                 contentDescription = if (isPlaying) "暂停" else "播放",
                 tint = AppColors.Player,
-                modifier = Modifier.size(21.dp)
+                modifier = Modifier.size(30.dp)
             )
         }
-        Spacer(Modifier.width(4.dp))
+        Spacer(Modifier.width(6.dp))
         PillIconButton(
             icon = Icons.Filled.Forward30,
             contentDescription = "前进 30 秒",
@@ -1186,7 +1182,7 @@ private fun PillIconButton(
 ) {
     Box(
         Modifier
-            .size(36.dp)
+            .size(52.dp)
             .clip(CircleShape)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
@@ -1195,7 +1191,7 @@ private fun PillIconButton(
             icon,
             contentDescription = contentDescription,
             tint = AppColors.PlayerOption,
-            modifier = Modifier.size(20.dp)
+            modifier = Modifier.size(26.dp)
         )
     }
 }
