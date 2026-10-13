@@ -20,6 +20,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        applyHighRefreshRate()
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT)
@@ -28,6 +29,20 @@ class MainActivity : ComponentActivity() {
             LoveqTheme {
                 AppScreen(onRequestNotificationPermission = ::requestNotificationPermissionIfNeeded)
             }
+        }
+    }
+
+    /**
+     * 高刷屏上跑满刷新率。
+     *
+     * 小米 14 这类机型的屏幕本身就在 120Hz（`mActiveRenderFrameRate=120`），
+     * 但应用不声明帧率偏好时，系统可能按「未知帧率」处理并退回 60Hz。
+     * preferredRefreshRate = 0 表示明确「跟随屏幕默认模式」，
+     * 配合 Compose 的无障碍/动画需求，系统就会按 120Hz 调度。
+     */
+    private fun applyHighRefreshRate() {
+        runCatching {
+            window.attributes = window.attributes.apply { preferredRefreshRate = 0f }
         }
     }
 
