@@ -43,7 +43,12 @@ class PlayerConnection(context: Context) {
     init {
         controllerFuture.addListener(
             {
-                val c = controllerFuture.get()
+                val c = try {
+                    controllerFuture.get()
+                } catch (e: Exception) {
+                    PlaybackEvents.tryEmit("播放服务启动失败，请重启应用")
+                    return@addListener
+                }
                 controller = c
                 c.addListener(listener)
                 refreshStaticState()

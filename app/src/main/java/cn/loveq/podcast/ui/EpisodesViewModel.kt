@@ -6,9 +6,14 @@ import androidx.lifecycle.viewModelScope
 import cn.loveq.podcast.LoveqApp
 import cn.loveq.podcast.data.Category
 import cn.loveq.podcast.data.Episode
+import cn.loveq.podcast.data.PageResult
 import cn.loveq.podcast.data.Progress
 import cn.loveq.podcast.playback.PlaybackEvents
 import cn.loveq.podcast.playback.PlayerConnection
+import cn.loveq.podcast.playback.VolumeBoost
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -28,6 +33,7 @@ data class ListUiState(
     val loadingDown: Boolean = false,
     val loadingUp: Boolean = false,
     val jumping: Boolean = false,
+    val scrollResetToken: Int = 0,
     val error: String? = null
 ) {
     val endReached: Boolean get() = loadedEndPage >= totalPages && !initialLoading
@@ -59,9 +65,23 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
     val nowTitle = connection.nowTitle
     val nowDate = connection.nowDate
 
-    private val pageCache = mutableMapOf<Int, MutableMap<Int, List<Episode>>>()
+    /** 软件音量增强档位（100–200%），与倍速一样全局记忆 */
+    val boostPercent: StateFlow<Int> = VolumeBoost.percent
+
+    fun setBoost(percent: Int) {
+        VolumeBoost.apply(percent)
+        store.boostPercent = percent
+    }
+
+    private val pageCache = mutableMapOf<Int, MutableMap<Int, PageResult>>()
     private val _state = MutableStateFlow(ListUiState())
     val state: StateFlow<ListUiState> = _state
+
+    /** 整表加载（首屏/刷新/跳年份）共用一个 Job，新操作取消旧操作 */
+    private var loadJob: Job? = null
+
+    /** 整表替换代数：分类切换/刷新/跳转时递增，分页等旧任务据此丢弃过期结果 */
+    private var loadGen = 0
 
     init {
         loveqApp.indexStore.ensureIndex(repo)
@@ -70,6 +90,7 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
 
     fun switchCategory(category: Category) {
         if (_state.value.category.id == category.id) return
+        loadJob?.cancel()
         _state.update {
             it.copy(
                 category = category,
@@ -78,25 +99,33 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
                 loadedEndPage = 0,
                 totalPages = 1,
                 initialLoading = true,
+                refreshing = false,
+                loadingDown = false,
+                loadingUp = false,
+                jumping = false,
+                scrollResetToken = it.scrollResetToken + 1,
                 error = null
             )
         }
         loadInitial()
     }
 
-    private fun cached(catId: Int, page: Int): List<Episode>? =
+    private fun cached(catId: Int, page: Int): PageResult? =
         pageCache[catId]?.get(page)
 
-    private fun cache(catId: Int, page: Int, episodes: List<Episode>) {
-        pageCache.getOrPut(catId) { mutableMapOf() }[page] = episodes
+    private fun cache(catId: Int, page: Int, result: PageResult) {
+        pageCache.getOrPut(catId) { mutableMapOf() }[page] = result
     }
 
     private fun loadInitial() {
+        loadJob?.cancel()
+        val gen = ++loadGen
         val catId = _state.value.category.id
-        viewModelScope.launch {
+        loadJob = viewModelScope.launch {
             try {
                 val result = repo.loadPage(1, catId)
-                cache(catId, 1, result.episodes)
+                if (loadGen != gen) return@launch
+                cache(catId, 1, result)
                 _state.update {
                     it.copy(
                         episodes = result.episodes,
@@ -107,7 +136,10 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
                         error = null
                     )
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
+                if (loadGen != gen) return@launch
                 _state.update {
                     it.copy(initialLoading = false, error = "加载失败：${e.message ?: "网络异常"}")
                 }
@@ -123,24 +155,33 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
     fun refresh() {
         if (_state.value.refreshing) return
         loveqApp.indexStore.refresh(repo)
+        loadJob?.cancel()
+        val gen = ++loadGen
         val catId = _state.value.category.id
-        viewModelScope.launch {
-            _state.update { it.copy(refreshing = true) }
+        loadJob = viewModelScope.launch {
+            _state.update {
+                it.copy(refreshing = true, loadingDown = false, loadingUp = false, jumping = false)
+            }
             try {
                 val result = repo.loadPage(1, catId)
-                cache(catId, 1, result.episodes)
+                if (loadGen != gen) return@launch
+                cache(catId, 1, result)
                 _state.update {
                     it.copy(
                         episodes = result.episodes,
                         startPage = 1,
                         loadedEndPage = 1,
                         totalPages = result.totalPages,
+                        initialLoading = false,
                         refreshing = false,
                         error = null
                     )
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                _state.update { it.copy(refreshing = false) }
+                if (loadGen != gen) return@launch
+                _state.update { it.copy(refreshing = false, initialLoading = false) }
                 PlaybackEvents.tryEmit("刷新失败，请检查网络")
             }
         }
@@ -149,81 +190,125 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
     fun loadNextPage() {
         val s = _state.value
         if (s.loadingDown || s.jumping || s.loadedEndPage >= s.totalPages) return
+        val catId = s.category.id
+        val gen = loadGen
+        val next = s.loadedEndPage + 1
         viewModelScope.launch {
             _state.update { it.copy(loadingDown = true) }
             try {
-                val next = s.loadedEndPage + 1
-                val episodes = cached(s.category.id, next)
-                    ?: repo.loadPage(next, s.category.id).episodes.also { cache(s.category.id, next, it) }
+                val result = cached(catId, next)
+                    ?: repo.loadPage(next, catId).also { cache(catId, next, it) }
+                if (loadGen != gen) return@launch
                 _state.update {
-                    it.copy(
-                        episodes = it.episodes + episodes,
-                        loadedEndPage = next,
-                        loadingDown = false
-                    )
+                    // 基准页不匹配说明列表已被刷新/跳转替换，丢弃这页避免拼出缺口
+                    if (it.loadedEndPage != next - 1) {
+                        it.copy(loadingDown = false)
+                    } else {
+                        it.copy(
+                            episodes = it.episodes + result.episodes,
+                            loadedEndPage = next,
+                            totalPages = result.totalPages,
+                            loadingDown = false
+                        )
+                    }
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                _state.update { it.copy(loadingDown = false) }
+                if (loadGen == gen) _state.update { it.copy(loadingDown = false) }
             }
         }
     }
 
     fun loadPreviousPage() {
         val s = _state.value
-        if (s.loadingUp || s.startPage <= 1) return
+        if (s.loadingUp || s.jumping || s.startPage <= 1) return
+        val catId = s.category.id
+        val gen = loadGen
+        val prev = s.startPage - 1
         viewModelScope.launch {
             _state.update { it.copy(loadingUp = true) }
             try {
-                val prev = s.startPage - 1
-                val episodes = cached(s.category.id, prev)
-                    ?: repo.loadPage(prev, s.category.id).episodes.also { cache(s.category.id, prev, it) }
+                val result = cached(catId, prev)
+                    ?: repo.loadPage(prev, catId).also { cache(catId, prev, it) }
+                if (loadGen != gen) return@launch
                 _state.update {
-                    it.copy(
-                        episodes = episodes + it.episodes,
-                        startPage = prev,
-                        loadingUp = false
-                    )
+                    if (it.startPage != prev + 1) {
+                        it.copy(loadingUp = false)
+                    } else {
+                        it.copy(
+                            episodes = result.episodes + it.episodes,
+                            startPage = prev,
+                            loadingUp = false
+                        )
+                    }
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                _state.update { it.copy(loadingUp = false) }
+                if (loadGen == gen) _state.update { it.copy(loadingUp = false) }
             }
         }
     }
 
     fun jumpToYear(year: Int) {
         if (_state.value.jumping) return
+        loadJob?.cancel()
+        val gen = ++loadGen
         val catId = _state.value.category.id
-        viewModelScope.launch {
-            _state.update { it.copy(jumping = true) }
+        loadJob = viewModelScope.launch {
+            _state.update {
+                it.copy(
+                    jumping = true,
+                    initialLoading = false,
+                    refreshing = false,
+                    loadingDown = false,
+                    loadingUp = false
+                )
+            }
             try {
-                val totalPages = _state.value.totalPages
+                var totalPages = _state.value.totalPages
                 var page = 1
-                var result: List<Episode>? = null
+                var episodes: List<Episode>? = null
                 while (page <= totalPages) {
-                    val episodes = cached(catId, page)
-                        ?: repo.loadPage(page, catId).episodes.also { cache(catId, page, it) }
-                    val idx = episodes.indexOfFirst { it.year <= year }
+                    val cachedResult = cached(catId, page)
+                    val result = if (cachedResult != null) {
+                        cachedResult
+                    } else {
+                        repo.loadPage(page, catId).also {
+                            cache(catId, page, it)
+                            delay(REQUEST_DELAY_MS)
+                        }
+                    }
+                    totalPages = result.totalPages
+                    val idx = result.episodes.indexOfFirst { it.year <= year }
                     if (idx >= 0) {
-                        result = episodes.subList(idx, episodes.size)
+                        episodes = result.episodes.subList(idx, result.episodes.size)
                         break
                     }
                     page++
                 }
-                if (result != null) {
+                if (loadGen != gen) return@launch
+                val found = episodes
+                if (found != null) {
                     _state.update {
                         it.copy(
-                            episodes = result,
+                            episodes = found,
                             startPage = page,
-                            loadedEndPage = page
+                            loadedEndPage = page,
+                            totalPages = totalPages,
+                            scrollResetToken = it.scrollResetToken + 1
                         )
                     }
                 } else {
                     PlaybackEvents.tryEmit("没有找到 $year 年的节目")
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                PlaybackEvents.tryEmit("跳转失败，请检查网络")
+                if (loadGen == gen) PlaybackEvents.tryEmit("跳转失败，请检查网络")
             } finally {
-                _state.update { it.copy(jumping = false) }
+                if (loadGen == gen) _state.update { it.copy(jumping = false) }
             }
         }
     }
@@ -274,5 +359,6 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
 
     private companion object {
         const val QUEUE_AHEAD = 50
+        const val REQUEST_DELAY_MS = 200L
     }
 }

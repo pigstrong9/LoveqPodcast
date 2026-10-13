@@ -1,6 +1,7 @@
 package cn.loveq.podcast.playback
 
 import android.app.PendingIntent
+import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.view.KeyEvent
@@ -11,10 +12,14 @@ import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
+import androidx.media3.common.audio.AudioProcessor
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.cache.CacheKeyFactory
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.audio.AudioSink
+import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.session.MediaSession
 import androidx.media3.session.SessionCommand
@@ -24,6 +29,7 @@ import cn.loveq.podcast.LoveqApp
 import cn.loveq.podcast.data.Episode
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -33,7 +39,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 class PlaybackService : MediaSessionService() {
-
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private lateinit var app: LoveqApp
 
@@ -42,9 +47,13 @@ class PlaybackService : MediaSessionService() {
 
     private var queue: List<Episode> = emptyList()
     private var queueIndex = -1
+    private var playingEpisode: Episode? = null
     private var currentTitle = ""
     private var urlRetries = 0
     private var currentJob: Job? = null
+    private var lastSavedId: Long? = null
+    private var lastSavedPosition = -1L
+    private var pendingLoad = false
 
     override fun onCreate() {
         super.onCreate()
@@ -58,6 +67,7 @@ class PlaybackService : MediaSessionService() {
             .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
 
         val exoPlayer = ExoPlayer.Builder(this)
+            .setRenderersFactory(BoostRenderersFactory(this))
             .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
             .setAudioAttributes(
                 AudioAttributes.Builder()
@@ -171,19 +181,24 @@ class PlaybackService : MediaSessionService() {
         queueIndex = index
         urlRetries = 0
         val episode = queue.getOrNull(index) ?: return
+        pendingLoad = true
         currentJob?.cancel()
         currentJob = scope.launch {
             try {
                 val audio = app.repository.fetchAudio(episode.id)
                 setItemAndPlay(episode, audio.url, audio.title ?: episode.title)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
+                pendingLoad = false
                 PlaybackEvents.tryEmit("加载节目失败，请检查网络后重试")
             }
         }
     }
 
     private fun setItemAndPlay(episode: Episode, url: String, title: String) {
-        urlRetries = 0
+        pendingLoad = false
+        playingEpisode = episode
         currentTitle = title
         val item = MediaItem.Builder()
             .setMediaId(episode.id.toString())
@@ -217,6 +232,8 @@ class PlaybackService : MediaSessionService() {
             try {
                 val audio = app.repository.fetchAudio(episode.id)
                 setItemAndPlay(episode, audio.url, audio.title ?: episode.title)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 PlaybackEvents.tryEmit("节目地址已过期且刷新失败，请稍后重试")
             }
@@ -226,28 +243,34 @@ class PlaybackService : MediaSessionService() {
     private fun saveProgress() {
         val player = mediaSession?.player ?: return
         val id = player.currentMediaItem?.mediaId?.toLongOrNull() ?: return
-        val episode = queue.getOrNull(queueIndex) ?: return
+        val episode = playingEpisode?.takeIf { it.id == id } ?: return
         val duration = player.duration
-        if (duration > 0 && player.currentPosition > 0) {
-            app.progressStore.save(
-                id = id,
-                positionMs = player.currentPosition,
-                durationMs = duration,
-                title = currentTitle,
-                date = episode.date
-            )
-        }
+        val position = player.currentPosition
+        if (duration <= 0 || position <= 0) return
+        if (id == lastSavedId && position == lastSavedPosition) return
+        lastSavedId = id
+        lastSavedPosition = position
+        app.progressStore.save(
+            id = id,
+            positionMs = position,
+            durationMs = duration,
+            title = currentTitle,
+            date = episode.date
+        )
     }
 
     private val playerListener = object : Player.Listener {
         override fun onPlaybackStateChanged(playbackState: Int) {
             if (playbackState == Player.STATE_ENDED) {
-                val id = player.currentMediaItem?.mediaId?.toLongOrNull()
-                val episode = queue.getOrNull(queueIndex)
-                if (id != null && episode != null) {
-                    app.progressStore.markDone(id, currentTitle, episode.date)
+                val endedId = player.currentMediaItem?.mediaId?.toLongOrNull()
+                val ended = playingEpisode?.takeIf { it.id == endedId }
+                if (ended != null) {
+                    app.progressStore.markDone(ended.id, currentTitle, ended.date)
                 }
-                if (queueIndex + 1 < queue.size) {
+                // 仅当结束的正是当前队列项且没有用户点播在途时才自动连播
+                val canAdvance = !pendingLoad && endedId != null &&
+                    endedId == queue.getOrNull(queueIndex)?.id
+                if (canAdvance && queueIndex + 1 < queue.size) {
                     loadAndPlay(queueIndex + 1)
                 }
             }
@@ -300,4 +323,19 @@ class PlaybackService : MediaSessionService() {
         private const val RESUME_EPSILON_MS = 30_000L
         private const val MAX_URL_RETRIES = 2
     }
+}
+
+/** 把音量增强处理链挂进 DefaultAudioSink，其余沿用默认装配 */
+private class BoostRenderersFactory(context: Context) : DefaultRenderersFactory(context) {
+
+    override fun buildAudioSink(
+        context: Context,
+        enableFloatOutput: Boolean,
+        enableAudioTrackPlaybackParams: Boolean
+    ): AudioSink = DefaultAudioSink.Builder(context)
+        // 处理链固定吃 16-bit PCM，避免车机上协商出 float/offload 路径导致 AudioTrack 建不出来
+        .setEnableFloatOutput(false)
+        .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
+        .setAudioProcessors(arrayOf<AudioProcessor>(VolumeBoostProcessor()))
+        .build()
 }
