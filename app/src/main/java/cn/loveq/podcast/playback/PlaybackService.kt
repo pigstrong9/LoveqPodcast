@@ -3,6 +3,7 @@ package cn.loveq.podcast.playback
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.view.KeyEvent
 import androidx.media3.common.AudioAttributes
@@ -26,6 +27,7 @@ import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionResult
 import androidx.media3.session.MediaSessionService
 import cn.loveq.podcast.LoveqApp
+import cn.loveq.podcast.R
 import cn.loveq.podcast.data.Episode
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
@@ -46,7 +48,6 @@ class PlaybackService : MediaSessionService() {
     private val player: Player get() = mediaSession!!.player
 
     private var queue: List<Episode> = emptyList()
-    private var queueIndex = -1
     private var playingEpisode: Episode? = null
     private var currentTitle = ""
     private var urlRetries = 0
@@ -54,6 +55,9 @@ class PlaybackService : MediaSessionService() {
     private var lastSavedId: Long? = null
     private var lastSavedPosition = -1L
     private var pendingLoad = false
+
+    /** 正在解析音频地址的队列下标，-1 表示空闲；避免占位地址报错时重复触发解析 */
+    private var resolvingIndex = -1
 
     override fun onCreate() {
         super.onCreate()
@@ -173,47 +177,81 @@ class PlaybackService : MediaSessionService() {
     }
 
     private fun playQueue(items: List<Episode>, startIndex: Int) {
+        if (items.isEmpty()) return
         queue = items
-        loadAndPlay(startIndex)
+        urlRetries = 0
+        // 一次性把整条队列交给播放器：通知栏因此知道「有下一期」，才会显示切集按钮。
+        // 音频地址（带签名、有时效）先留空，播放到某一期时再解析并替换进去。
+        pendingLoad = true
+        if (startIndex > 0) player.seekToDefaultPosition(startIndex)
+        player.setMediaItems(items.map { lazyItem(it) }, startIndex, 0L)
+        // 起始条目的真实地址由 resolveAndPlay 解析并替换，这里不 prepare 占位条目
+        resolveAndPlay(startIndex)
     }
 
-    private fun loadAndPlay(index: Int) {
-        queueIndex = index
-        urlRetries = 0
+    /**
+     * 队列项的占位条目：只有 id 与元数据，没有真实音频地址。
+     * ExoPlayer 不接受 uri 为空的 MediaItem，所以挂一个「尚未解析」的占位地址，
+     * 播放到这一期时会立刻被换掉，不会真去加载。
+     * 艺术家一栏放节目名（通知栏需要），日期改放 albumTitle；
+     * 应用内播放面板的日期由 PlayerConnection 从 mediaId 查队列得到。
+     */
+    private fun lazyItem(episode: Episode): MediaItem = MediaItem.Builder()
+        .setMediaId(episode.id.toString())
+        .setUri(PLACEHOLDER_URI)
+        .setMediaMetadata(episodeMetadata(episode.title.ifBlank { episode.date }, episode.date))
+        .build()
+
+    private fun episodeMetadata(title: String, date: String): MediaMetadata =
+        MediaMetadata.Builder()
+            .setTitle(title)
+            .setArtist(PODCAST_NAME)
+            .setAlbumTitle(date)
+            .setArtworkUri(artworkUri)
+            .build()
+
+    /** 解析某一期的音频地址并立即播放；地址过期重试也走这里 */
+    private fun resolveAndPlay(index: Int) {
         val episode = queue.getOrNull(index) ?: return
+        if (resolvingIndex == index) return
+        resolvingIndex = index
         pendingLoad = true
+        urlRetries = 0
         currentJob?.cancel()
         currentJob = scope.launch {
             try {
                 val audio = app.repository.fetchAudio(episode.id)
-                setItemAndPlay(episode, audio.url, audio.title ?: episode.title)
+                resolvingIndex = -1
+                if (index != player.currentMediaItemIndex) return@launch
+                val item = lazyItem(episode)
+                    .buildUpon()
+                    .setUri(audio.url)
+                    .setMediaMetadata(
+                        episodeMetadata(
+                            title = audio.title ?: episode.title.ifBlank { episode.date },
+                            date = episode.date
+                        )
+                    )
+                    .build()
+                MediaCache.setActiveKey(item.localConfiguration?.uri)
+                player.replaceMediaItem(index, item)
+                player.prepare()
+                startAtSavedPosition(episode)
+                player.play()
+                pendingLoad = false
             } catch (e: CancellationException) {
+                resolvingIndex = -1
                 throw e
             } catch (e: Exception) {
+                resolvingIndex = -1
                 pendingLoad = false
                 PlaybackEvents.tryEmit("加载节目失败，请检查网络后重试")
             }
         }
     }
 
-    private fun setItemAndPlay(episode: Episode, url: String, title: String) {
-        pendingLoad = false
-        playingEpisode = episode
-        currentTitle = title
-        val item = MediaItem.Builder()
-            .setMediaId(episode.id.toString())
-            .setUri(url)
-            .setMediaMetadata(
-                MediaMetadata.Builder()
-                    .setTitle(title)
-                    .setArtist(episode.date)
-                    .build()
-            )
-            .build()
-        MediaCache.setActiveKey(item.localConfiguration?.uri)
-        player.setMediaItem(item)
-        player.prepare()
-
+    /** 续播：有进度且在有效范围内就跳到上次位置 */
+    private fun startAtSavedPosition(episode: Episode) {
         val saved = app.progressStore.get(episode.id)
         val startPos = when {
             saved == null || saved.done -> 0L
@@ -222,22 +260,12 @@ class PlaybackService : MediaSessionService() {
             else -> 0L
         }
         if (startPos > 0) player.seekTo(startPos)
-        player.play()
     }
 
     private fun resumeCurrentWithFreshUrl() {
-        val episode = queue.getOrNull(queueIndex) ?: return
-        currentJob?.cancel()
-        currentJob = scope.launch {
-            try {
-                val audio = app.repository.fetchAudio(episode.id)
-                setItemAndPlay(episode, audio.url, audio.title ?: episode.title)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                PlaybackEvents.tryEmit("节目地址已过期且刷新失败，请稍后重试")
-            }
-        }
+        // 地址过期要重新解析，先清掉「正在解析」标记
+        resolvingIndex = -1
+        resolveAndPlay(player.currentMediaItemIndex)
     }
 
     private fun saveProgress() {
@@ -260,6 +288,24 @@ class PlaybackService : MediaSessionService() {
     }
 
     private val playerListener = object : Player.Listener {
+        /**
+         * 系统通知栏/车机的切集按钮会直接切换队列项，此时条目还没解析出音频地址，
+         * 在这里补上解析；用户点播走的也是这条路（switch 后 currentMediaItem 无 uri）。
+         */
+        override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+            val index = player.currentMediaItemIndex
+            val episode = queue.getOrNull(index) ?: return
+            playingEpisode = episode
+            currentTitle = mediaItem?.mediaMetadata?.title?.toString() ?: episode.title
+            if (mediaItem?.localConfiguration?.uri?.toString() == PLACEHOLDER_URI &&
+                resolvingIndex != index
+            ) {
+                resolveAndPlay(index)
+            } else {
+                urlRetries = 0
+            }
+        }
+
         override fun onPlaybackStateChanged(playbackState: Int) {
             if (playbackState == Player.STATE_ENDED) {
                 val endedId = player.currentMediaItem?.mediaId?.toLongOrNull()
@@ -269,14 +315,17 @@ class PlaybackService : MediaSessionService() {
                 }
                 // 仅当结束的正是当前队列项且没有用户点播在途时才自动连播
                 val canAdvance = !pendingLoad && endedId != null &&
-                    endedId == queue.getOrNull(queueIndex)?.id
-                if (canAdvance && queueIndex + 1 < queue.size) {
-                    loadAndPlay(queueIndex + 1)
+                    endedId == queue.getOrNull(player.currentMediaItemIndex)?.id
+                if (canAdvance && player.currentMediaItemIndex + 1 < queue.size) {
+                    player.seekToDefaultPosition(player.currentMediaItemIndex + 1)
+                    resolveAndPlay(player.currentMediaItemIndex)
                 }
             }
         }
 
         override fun onPlayerError(error: PlaybackException) {
+            // 占位地址（还没解析出真实直链）导致的加载失败，不算真错误
+            if (pendingLoad) return
             val httpError = error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS
             if (httpError && urlRetries < MAX_URL_RETRIES) {
                 urlRetries++
@@ -318,11 +367,21 @@ class PlaybackService : MediaSessionService() {
         const val EXTRA_ITEMS = "items"
         const val EXTRA_START = "start"
         const val SEP = "\u0001"
+
+        /** 艺术家一栏固定显示节目名，通知栏因此显示「一些事一些情」而不是日期 */
+        private const val PODCAST_NAME = "一些事一些情"
+
+        /** 队列占位地址：ExoPlayer 不接受 uri 为空的条目，播放前会被真实直链替换 */
+        private const val PLACEHOLDER_URI = "about:blank"
         private const val SEEK_STEP_MS = 30_000L
         private const val SAVE_INTERVAL_MS = 5_000L
         private const val RESUME_EPSILON_MS = 30_000L
         private const val MAX_URL_RETRIES = 2
     }
+
+    /** 通知栏/锁屏的专辑图：直接用应用内的主持人封面 */
+    private val artworkUri: Uri
+        get() = Uri.parse("android.resource://$packageName/${R.drawable.hosts_cover}")
 }
 
 /** 把音量增强处理链挂进 DefaultAudioSink，其余沿用默认装配 */

@@ -128,7 +128,8 @@ class PlayerConnection(context: Context) {
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             mediaId.value = mediaItem?.mediaId
             nowTitle.value = mediaItem?.mediaMetadata?.title?.toString()
-            nowDate.value = mediaItem?.mediaMetadata?.artist?.toString()
+            // 日期放在 albumTitle（通知栏的「艺术家」一栏被节目名占用了）
+            nowDate.value = mediaItem?.mediaMetadata?.albumTitle?.toString()
             positionMs.value = 0
             durationMs.value = 0
         }
@@ -154,7 +155,7 @@ class PlayerConnection(context: Context) {
         if (c.duration > 0) durationMs.value = c.duration
         c.currentMediaItem?.let { item ->
             nowTitle.value = item.mediaMetadata.title?.toString()
-            nowDate.value = item.mediaMetadata.artist?.toString()
+            nowDate.value = item.mediaMetadata.albumTitle?.toString()
         }
     }
 
