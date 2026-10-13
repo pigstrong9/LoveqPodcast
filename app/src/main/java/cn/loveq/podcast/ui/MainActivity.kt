@@ -11,6 +11,9 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import cn.loveq.podcast.ui.theme.LoveqTheme
 
 class MainActivity : ComponentActivity() {
@@ -25,11 +28,29 @@ class MainActivity : ComponentActivity() {
             statusBarStyle = SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT)
         )
+        hideSystemBars()
         setContent {
             LoveqTheme {
                 AppScreen(onRequestNotificationPermission = ::requestNotificationPermissionIfNeeded)
             }
         }
+    }
+
+    /**
+     * 沉浸式：默认隐藏系统状态栏（车机顶栏/手机通知栏），内容全屏顶到上沿。
+     * 从屏幕边缘滑动可临时呼出（transient，不占布局）。
+     * 系统在弹窗、切后台等场景会重置沉浸标记，焦点恢复时重新应用。
+     */
+    private fun hideSystemBars() {
+        val controller = WindowCompat.getInsetsController(window, window.decorView)
+        controller.systemBarsBehavior =
+            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        controller.hide(WindowInsetsCompat.Type.statusBars())
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) hideSystemBars()
     }
 
     /**
