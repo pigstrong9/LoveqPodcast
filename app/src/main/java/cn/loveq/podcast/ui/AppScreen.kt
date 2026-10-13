@@ -48,6 +48,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
@@ -148,8 +149,9 @@ fun AppScreen(
                 .windowInsetsPadding(WindowInsets.systemBars)
         ) {
             if (wide) {
-                Column(Modifier.fillMaxSize()) {
-                    Row(Modifier.fillMaxWidth().weight(1f)) {
+                // 用 Box 让迷你胶囊浮在列表之上：收起时列表保持满高，底部不留空档
+                Box(Modifier.fillMaxSize()) {
+                    Row(Modifier.fillMaxSize()) {
                         Sidebar(
                             selected = state.category,
                             onSelect = viewModel::switchCategory,
@@ -204,9 +206,10 @@ fun AppScreen(
                             )
                         }
                     }
-                    // 收起后缩到底部的迷你胶囊，点它重新展开
+                    // 收起后缩到底部的迷你胶囊（浮层，占位不挤压列表），点它重新展开
                     AnimatedVisibility(
                         visible = playingMediaId != null && playerCollapsed,
+                        modifier = Modifier.align(Alignment.BottomCenter),
                         enter = slideInVertically(tween(280)) { it } + fadeIn(tween(200)),
                         exit = slideOutVertically(tween(200)) { it } + fadeOut(tween(160))
                     ) {
