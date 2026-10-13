@@ -87,18 +87,30 @@ private val PanelShape = RoundedCornerShape(24.dp)
 private val BOTTOM_GAP = 12.dp
 
 /**
- * 封面边长占面板可用高度的比例。
- * 面板高度里，标题+日期+进度+控制键+底部设置栏合计约占一半（真机 384×800dp 面板实测），
- * 所以封面只取 45%，既不会压住标题，也不会把底部设置栏挤出屏幕。
+ * 封面边长占容器可用高度的比例。
+ * 固定内容（标题+日期+进度+控制键+底部设置栏）实测约 300dp：
+ * - 常驻侧栏（真机 384×800dp）：封面上限取 45%，不会压住标题、也不挤掉底部设置栏
+ * - 底部滑层（竖屏/窄屏）：四周可用空间更紧，且要顺带收紧两侧留白，取 40%
  */
 private const val COVER_HEIGHT_FRACTION = 0.45f
+private const val COVER_HEIGHT_FRACTION_SHEET = 0.40f
 
-/** 封面是正方形：两个方向都取小值，面板尺寸未知（首帧）时先用一个安全值 */
-private fun coverSize(boxSize: IntSize, density: Density): Dp {
+private val CONTENT_MIN_HEIGHT = 300.dp
+
+/**
+ * 封面是正方形，边长同时受容器宽高约束：
+ * 宽度取 92%（留两侧安全边距），高度取比例上限；
+ * 两个方向都算一遍再取小值，所以横屏、竖屏、分屏半幅都不会出现大片空白。
+ */
+private fun coverSize(boxSize: IntSize, density: Density, resident: Boolean, margin: Dp = 0.dp): Dp {
     if (boxSize == IntSize.Zero) return 140.dp
-    val width = with(density) { boxSize.width.toDp() }
+    val width = with(density) { boxSize.width.toDp() } - margin * 2
     val height = with(density) { boxSize.height.toDp() }
-    return minOf(width * 0.92f, height * COVER_HEIGHT_FRACTION)
+    val byWidth = width * if (resident) 0.92f else 1f
+    val byHeight = (height - CONTENT_MIN_HEIGHT) * 1.05f
+    val cap = height * if (resident) COVER_HEIGHT_FRACTION else COVER_HEIGHT_FRACTION_SHEET
+    val side = minOf(byWidth, byHeight, cap)
+    return side.coerceAtLeast(120.dp)
 }
 
 /** 宽屏右侧常驻播放面板（仅在有节目播放且未收起时挂载） */
@@ -418,47 +430,27 @@ private fun PlayerPanel(
     modifier: Modifier = Modifier,
     stretch: Boolean = false
 ) {
-    if (stretch) {
-        val density = LocalDensity.current
-        var boxSize by remember { mutableStateOf(IntSize.Zero) }
-        val artSize = coverSize(boxSize, density)
-        Box(
-            modifier
-                .fillMaxSize()
-                .onSizeChanged { boxSize = it }
-        ) {
-            Column(
-                Modifier.fillMaxSize(),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                // 封面区拿走面板高度与内容之间的差值，封面在其中垂直居中
-                Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
-                    Cover(artSize)
-                }
-                ContentBlock(
-                    title = title,
-                    date = date,
-                    positionMs = positionMs,
-                    durationMs = durationMs,
-                    isPlaying = isPlaying,
-                    speed = speed,
-                    boost = boost,
-                    tuningVisible = tuningVisible,
-                    onToggle = onToggle,
-                    onSeekTo = onSeekTo,
-                    onSeekBack = onSeekBack,
-                    onSeekForward = onSeekForward,
-                    onRequestTuning = onRequestTuning,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-        }
-    } else {
+    // 横竖屏统一用同一套自适应布局：封面按「容器宽高 + 是否常驻」推导边长，
+    // 内容贴着底部、剩余空间全给封面，所以不会出现底部或两侧大片空白
+    val density = LocalDensity.current
+    var boxSize by remember { mutableStateOf(IntSize.Zero) }
+    val artSize = coverSize(boxSize, density, resident = stretch)
+    Box(
+        modifier
+            .fillMaxSize()
+            .onSizeChanged { boxSize = it }
+    ) {
         Column(
-            modifier.verticalScroll(rememberScrollState()),
+            Modifier.fillMaxSize(),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Cover(null)
+            // 封面区拿走剩余高度，封面在其中居中
+            Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                Cover(artSize)
+            }
+            // 控制键与底部设置栏之间再放一个轻量弹簧：剩余高度按 3:1 分给封面区与这里，
+            // 底部不会空出一大块，控件也不会全挤在顶端
+            Spacer(Modifier.weight(0.34f))
             ContentBlock(
                 title = title,
                 date = date,
