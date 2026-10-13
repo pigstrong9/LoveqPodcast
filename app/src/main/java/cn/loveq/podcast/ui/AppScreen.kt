@@ -70,6 +70,13 @@ import kotlinx.coroutines.withContext
 /** 达到这个宽度才用三栏（边栏 + 列表 + 播放面板），否则单栏 + 迷你播放条 */
 private val ThreePaneThreshold = 880.dp
 
+/**
+ * 三栏还要求宽度至少是高度的这个倍数。
+ * 车机五五分屏拿到的区域接近方形（如 1920x1080 车机在 1.0x 密度下分屏为 960x675dp），
+ * 这种比例下三栏会把列表挤到 420dp 左右，不如走窄屏。
+ */
+private const val ThreePaneAspect = 1.45f
+
 /** 收起态迷你胶囊浮在列表上，列表底部要避让的高度（胶囊实测 82dp + 上下留白） */
 private val MINI_PILL_INSET = 104.dp
 
@@ -138,7 +145,11 @@ fun AppScreen(
     val nowSub = listOf(state.category.name, nowDate).filter { it.isNotBlank() }.joinToString(" · ")
 
     BoxWithConstraints {
-        val wide = maxWidth >= ThreePaneThreshold
+        // 三栏要求「够宽」且「够扁」：
+        // 车机五五分屏常见的 960x675dp（横屏一半）虽然宽度过了 880dp，
+        // 但它接近方形，摆下侧栏+列表+播放面板后中间只剩约 420dp，比手机还窄，
+        // 所以这种尺寸要走窄屏（单栏 + 迷你条）。
+        val wide = maxWidth >= ThreePaneThreshold && maxWidth >= maxHeight * ThreePaneAspect
         val landscape = maxWidth > maxHeight
         val sidebarWidth = (maxWidth * 0.17f).coerceIn(204.dp, 252.dp)
         val playerWidth = (maxWidth * 0.30f).coerceIn(330.dp, 424.dp)
