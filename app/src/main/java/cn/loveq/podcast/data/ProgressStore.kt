@@ -60,29 +60,33 @@ class ProgressStore(context: Context) {
         val pos = positionMs.coerceAtLeast(0)
         val dur = if (durationMs > 0) durationMs else prefs.getLong(KEY_DUR + id, 0L)
         val done = dur > 0 && pos >= dur - DONE_EPSILON
+        val now = System.currentTimeMillis()
         prefs.edit()
             .putLong(KEY_POS + id, pos)
             .putLong(KEY_DUR + id, dur)
             .putBoolean(KEY_DONE + id, done)
-            .putLong(KEY_TIME + id, System.currentTimeMillis())
+            .putLong(KEY_TIME + id, now)
             .putString(KEY_META + id, JSONObject().put("title", title).put("date", date).toString())
             .putLong(KEY_LAST, id)
             .apply()
-        reload()
+        _progressMap.value = _progressMap.value + (id to Progress(id, pos, dur, done, title, date, now))
+        _lastId.value = id
     }
 
     @Synchronized
     fun markDone(id: Long, title: String, date: String) {
         val dur = prefs.getLong(KEY_DUR + id, 0L)
+        val now = System.currentTimeMillis()
         prefs.edit()
             .putLong(KEY_POS + id, dur)
             .putLong(KEY_DUR + id, dur)
             .putBoolean(KEY_DONE + id, true)
-            .putLong(KEY_TIME + id, System.currentTimeMillis())
+            .putLong(KEY_TIME + id, now)
             .putString(KEY_META + id, JSONObject().put("title", title).put("date", date).toString())
             .putLong(KEY_LAST, id)
             .apply()
-        reload()
+        _progressMap.value = _progressMap.value + (id to Progress(id, dur, dur, true, title, date, now))
+        _lastId.value = id
     }
 
     fun get(id: Long): Progress? = _progressMap.value[id]
@@ -90,6 +94,11 @@ class ProgressStore(context: Context) {
     var speed: Float
         get() = prefs.getFloat(KEY_SPEED, 1.0f)
         set(value) = prefs.edit().putFloat(KEY_SPEED, value).apply()
+
+    /** 软件音量增强档位，100 表示不增强 */
+    var boostPercent: Int
+        get() = prefs.getInt(KEY_BOOST, 100)
+        set(value) = prefs.edit().putInt(KEY_BOOST, value).apply()
 
     private companion object {
         const val KEY_POS = "pos_"
@@ -99,6 +108,7 @@ class ProgressStore(context: Context) {
         const val KEY_TIME = "time_"
         const val KEY_LAST = "last_id"
         const val KEY_SPEED = "speed"
+        const val KEY_BOOST = "boost"
         const val DONE_EPSILON = 30_000L
     }
 }
