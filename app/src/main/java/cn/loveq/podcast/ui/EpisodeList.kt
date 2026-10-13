@@ -88,7 +88,9 @@ fun EpisodeListPane(
     refresh: () -> Unit,
     retry: () -> Unit,
     modifier: Modifier = Modifier,
-    compact: Boolean = false
+    compact: Boolean = false,
+    /** 底部要避让的浮层高度（迷你胶囊浮在列表上时传入），默认不避让 */
+    bottomInset: Dp = 0.dp
 ) {
     val listState = rememberLazyListState()
     val episodeCount = state.episodes.size
@@ -176,7 +178,7 @@ fun EpisodeListPane(
                             start = 16.dp,
                             end = 16.dp,
                             top = 4.dp,
-                            bottom = 14.dp
+                            bottom = 14.dp + bottomInset
                         )
                     ) {
                         if (lastProgress != null && !lastProgress.done) {

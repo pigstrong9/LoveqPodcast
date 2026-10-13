@@ -70,6 +70,9 @@ import kotlinx.coroutines.withContext
 /** 达到这个宽度才用三栏（边栏 + 列表 + 播放面板），否则单栏 + 迷你播放条 */
 private val ThreePaneThreshold = 880.dp
 
+/** 收起态迷你胶囊浮在列表上，列表底部要避让的高度（胶囊实测 82dp + 上下留白） */
+private val MINI_PILL_INSET = 104.dp
+
 @Composable
 fun AppScreen(
     viewModel: EpisodesViewModel = viewModel(),
@@ -175,7 +178,9 @@ fun AppScreen(
                             loadPrevious = viewModel::loadPreviousPage,
                             refresh = viewModel::refresh,
                             retry = viewModel::retry,
-                            modifier = Modifier.weight(1f)
+                            modifier = Modifier.weight(1f),
+                            // 收起时迷你胶囊浮在列表上，底部留出它的高度，避免盖住最后一期
+                            bottomInset = if (playingMediaId != null && playerCollapsed) MINI_PILL_INSET else 0.dp
                         )
                         AnimatedVisibility(
                             visible = playingMediaId != null && !playerCollapsed,
