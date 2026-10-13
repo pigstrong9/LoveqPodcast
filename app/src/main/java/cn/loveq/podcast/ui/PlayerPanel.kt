@@ -91,6 +91,9 @@ private val BOTTOM_GAP = 12.dp
 /** 底部内容与容器下沿之间的额外余量，避开系统手势条/导航栏 */
 private val BOTTOM_CLEARANCE = 30.dp
 
+/** 封面上下的最小边距，避免内容贴到横线或屏幕边缘 */
+private val EDGE_MARGIN = 8.dp
+
 /** 封面边长占「可用高度」的比例，留一点余量避免贴边 */
 private const val COVER_FILL = 0.96f
 
@@ -207,17 +210,34 @@ private fun FullScreenPlayerDialog(onClose: () -> Unit, panel: @Composable () ->
         onDismissRequest = onClose,
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
-        Column(
+        Box(
             Modifier
                 .fillMaxSize()
+                .padding(top = CARD_TOP_MARGIN)
+                .clip(
+                    RoundedCornerShape(
+                        topStart = CARD_CORNER,
+                        topEnd = CARD_CORNER,
+                        bottomStart = 0.dp,
+                        bottomEnd = 0.dp
+                    )
+                )
                 .background(AppColors.Player)
                 .windowInsetsPadding(WindowInsets.systemBars)
         ) {
-            SheetHandle(onCollapse = onClose)
-            Box(Modifier.weight(1f).fillMaxWidth()) { panel() }
+            Column(Modifier.fillMaxSize()) {
+                SheetHandle(onCollapse = onClose)
+                Box(Modifier.weight(1f).fillMaxWidth()) { panel() }
+            }
         }
     }
 }
+
+/** 全屏播放卡片顶部留出的缝隙，露出后面的内容，配合圆角更像 iOS 的全屏播放器 */
+private val CARD_TOP_MARGIN = 10.dp
+
+/** 卡片顶部圆角（iOS 风格的大圆角） */
+private val CARD_CORNER = 28.dp
 
 /**
  * 顶部小横条：整条顶部区域（≥44dp 高）都可点，点一下即收起。
@@ -446,14 +466,16 @@ private fun PlayerPanel(
     ) { measurables, constraints ->
         // 每个 child 只能 measure 一次
         val widthConstraint = constraints.copy(minWidth = 0, minHeight = 0)
-        // 先量「标题/进度/控制/设置栏」，剩余高度才是封面能用的
+        // 先量「标题/进度/控制/设置栏」
         val content = measurables[1].measure(widthConstraint)
         val gap = BOTTOM_GAP.roundToPx()
+        // 上下各留 EDGE_MARGIN，底部再额外留出手势条/导航栏的余量。
+        // 可用高度由「容器高度 − 这些边距」得出，所以整组内容会整体上移、底部也不会被挡住
+        val edge = EDGE_MARGIN.roundToPx()
+        val clearance = BOTTOM_CLEARANCE.roundToPx()
+        val usable = (constraints.maxHeight - edge * 2 - clearance).coerceAtLeast(0)
         val side = (
-            minOf(
-                constraints.maxWidth,
-                (constraints.maxHeight - content.height - gap).coerceAtLeast(0)
-            ) * COVER_FILL
+            minOf(constraints.maxWidth, (usable - content.height - gap).coerceAtLeast(0)) * COVER_FILL
             ).toInt()
         val cover = measurables[0].measure(
             constraints.copy(
@@ -463,16 +485,12 @@ private fun PlayerPanel(
                 maxHeight = side
             )
         )
-        // 封面在上、内容贴底，剩余空隙留在封面下方。
-        // 额外再抬 BOTTOM_CLEARANCE：全屏滑层底下是系统手势条/导航栏，
-        // 不留这点余量时底部设置栏的下沿会被它压住
-        val clearance = BOTTOM_CLEARANCE.roundToPx()
-        val slack = (
-            constraints.maxHeight - content.height - cover.height - gap - clearance
-            ).coerceAtLeast(0)
+        // 封面在上、内容贴底；这一组整体垂直居中，剩余空隙由上下边距均分
+        val groupHeight = cover.height + gap + content.height
+        val top = (constraints.maxHeight - groupHeight - clearance) / 2
         layout(constraints.maxWidth, constraints.maxHeight) {
-            cover.place(x = (constraints.maxWidth - cover.width) / 2, y = slack / 2)
-            content.place(x = 0, y = constraints.maxHeight - content.height - clearance)
+            cover.place(x = (constraints.maxWidth - cover.width) / 2, y = top)
+            content.place(x = 0, y = top + cover.height + gap)
         }
     }
 
