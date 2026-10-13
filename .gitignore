@@ -14,5 +14,6 @@ local.properties
 *.keystore
 !debug.keystore
 *.jks
+keystore.properties
 .kotlin
 .review/
