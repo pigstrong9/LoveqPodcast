@@ -31,7 +31,6 @@ import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -113,6 +112,13 @@ private val EDGE_MARGIN = 8.dp
 /** 封面边长的收尾折扣：让封面离面板边缘留一点呼吸 */
 private const val COVER_FILL = 0.96f
 
+/**
+ * 全屏播放面板走「左封面 + 右控件」分栏所需的最小宽高比。
+ * 低于它说明窗口接近方形（车机分屏就是这种），分栏会让封面按高度撑成巨无霸、
+ * 控件被挤到右侧变形，不如回到上下堆叠并保证水平居中。
+ */
+private const val LANDSCAPE_SPLIT_RATIO = 1.5f
+
 /** 宽屏右侧常驻播放面板（仅在有节目播放且未收起时挂载） */
 @Composable
 fun PlayerSidePane(
@@ -192,7 +198,9 @@ fun PlayerSheet(
 ) {
     FullScreenPlayerDialog(onClose = onClose) {
         BoxWithConstraints {
-            val horizontal = maxWidth > maxHeight
+            // 只有真正「宽扁」的窗口才值得左右分栏；车机分屏拿到的窗口接近方形，
+            // 分栏会让封面按高度撑大、把控件挤到边上，不如回到上下堆叠并水平居中。
+            val horizontal = maxWidth > maxHeight * LANDSCAPE_SPLIT_RATIO
             if (horizontal) {
                 LandscapePlayerContent(
                     title = title,
@@ -269,10 +277,10 @@ private fun LandscapePlayerContent(
             .fillMaxSize(),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // 封面：边长按可用高度的 6 成（车机矮屏上吃满高度会压过右侧留白），
-        // 同时不超过宽度的一半，保证右侧控件组有足够空间
+        // 封面：边长按可用高度的 5 成，且不超过宽度的 4 成，
+        // 给右侧控件组留出稳定空间（宽扁窗口下高度是稀缺项，按高度算更容易失控）
         BoxWithConstraints(Modifier.fillMaxHeight()) {
-            val side = (maxHeight * 0.6f).coerceAtMost(maxWidth / 2)
+            val side = (maxHeight * 0.5f).coerceAtMost(maxWidth * 0.4f)
             Box(
                 Modifier
                     .size(side)
@@ -341,7 +349,8 @@ private fun FullScreenPlayerDialog(onClose: () -> Unit, panel: @Composable () ->
                     )
                 )
                 .background(AppColors.Player)
-                .windowInsetsPadding(WindowInsets.systemBars)
+                // 同上：状态栏已隐藏，只避让导航栏，否则顶部会多一条空白
+                .windowInsetsPadding(WindowInsets.navigationBars)
         ) {
             Column(Modifier.fillMaxSize()) {
                 SheetHandle(onCollapse = onClose)

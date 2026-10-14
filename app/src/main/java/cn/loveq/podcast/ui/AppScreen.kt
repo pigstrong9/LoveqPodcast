@@ -26,9 +26,9 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -163,7 +163,9 @@ fun AppScreen(
             Modifier
                 .fillMaxSize()
                 .background(MaterialTheme.colorScheme.background)
-                .windowInsetsPadding(WindowInsets.systemBars)
+                // 状态栏是主动隐藏的，但 DiLink 仍会上报非零的 statusBars inset，
+                // 跟着 pad 就会在顶部留一条浅色空白，所以只避让导航栏/手势条
+                .windowInsetsPadding(WindowInsets.navigationBars)
         ) {
             if (wide) {
                 // 用 Box 让迷你胶囊浮在列表之上：收起时列表保持满高，底部不留空档
