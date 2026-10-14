@@ -45,7 +45,7 @@ class DownloadManager(context: Context, private val repository: LoveqRepository)
 
     private var worker: Job? = null
 
-    enum class State { QUEUED, DOWNLOADING, FAILED }
+    enum class State { QUEUED, DOWNLOADING, DONE, FAILED }
 
     data class Entry(
         val episode: Episode,
@@ -143,8 +143,9 @@ class DownloadManager(context: Context, private val repository: LoveqRepository)
                 }
             }
             if (!part.renameTo(target)) throw IOException("重命名失败")
-            update(episode.id) { it.copy(bytes = target.length()) }
-            _downloads.value = _downloads.value.filterNot { it.episode.id == episode.id }
+            // 下完不从列表里剔除：列表同时是「哪几期离线可听」的唯一数据源，
+            // 列表徽标和缓存页都靠它
+            update(episode.id) { it.copy(state = State.DONE, bytes = target.length()) }
         } catch (e: Exception) {
             part.delete()
             if (e is kotlinx.coroutines.CancellationException) {
@@ -221,10 +222,16 @@ class DownloadManager(context: Context, private val repository: LoveqRepository)
         } catch (_: Exception) {
             emptyList()
         }
-        // 已经在磁盘上的条目直接认领，避免重复下载
-        val (onDisk, rest) = list.partition { localFile(it.episode.id) != null }
-        onDisk.forEach { File(dir, "${it.episode.id}.mp3.part").delete() }
-        _downloads.value = rest
+        // 磁盘上有完整文件的直接标 DONE（不重下）；清单说下完了但文件已不在的，重新排队
+        _downloads.value = list.map { entry ->
+            File(dir, "${entry.episode.id}.mp3.part").delete()
+            val f = localFile(entry.episode.id)
+            when {
+                f != null -> entry.copy(state = State.DONE, bytes = f.length(), totalBytes = f.length())
+                entry.state == State.DONE -> entry.copy(state = State.QUEUED, bytes = 0)
+                else -> entry
+            }
+        }
         persist()
         pump()
     }

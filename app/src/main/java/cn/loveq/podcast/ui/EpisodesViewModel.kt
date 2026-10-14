@@ -358,6 +358,14 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
         lastId.value?.let { playEpisodeById(it) }
     }
 
+    /** 离线缓存条目：列表徽标与缓存页共用这一份状态 */
+    val downloads = loveqApp.downloads.downloads
+
+    fun offlineEpisodes(episodes: List<Episode>) = loveqApp.downloads.enqueue(episodes)
+
+    /** 手动删除，或听完由服务自动调用 */
+    fun removeOffline(episodeId: Long) = loveqApp.downloads.remove(episodeId)
+
     fun togglePlayPause() = connection.togglePlayPause()
     fun seekTo(positionMs: Long) = connection.seekTo(positionMs)
     fun seekBack() = connection.seekBack()

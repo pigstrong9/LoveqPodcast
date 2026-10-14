@@ -21,6 +21,7 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -31,6 +32,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -41,7 +43,9 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -95,6 +99,7 @@ fun EpisodeListPane(
     selecting: Boolean = false,
     selectedIds: Set<Long> = emptySet(),
     offlineIds: Set<Long> = emptySet(),
+    pendingIds: Set<Long> = emptySet(),
     onEnterSelect: (Episode) -> Unit = {},
     onToggleSelect: (Long) -> Unit = {},
     onExitSelect: () -> Unit = {},
@@ -126,30 +131,57 @@ fun EpisodeListPane(
     }
 
     Column(modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(start = 26.dp, end = 26.dp, top = 20.dp, bottom = 10.dp),
-            verticalAlignment = Alignment.Bottom
-        ) {
-            Text(
-                state.category.name,
-                style = if (compact) MaterialTheme.typography.headlineSmall
-                else MaterialTheme.typography.displaySmall,
-                color = AppColors.Ink,
-                modifier = Modifier.alignByBaseline()
-            )
-            Spacer(Modifier.width(12.dp))
-            Text(
-                buildString {
-                    if (archiveCount > 0) append("$archiveCount 期")
-                    else append("已加载 ${state.episodes.size} 期")
-                    append(" · 新到旧")
-                },
-                style = MaterialTheme.typography.labelMedium,
-                color = AppColors.Muted,
-                modifier = Modifier.alignByBaseline()
-            )
+        if (selecting) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 56.dp)
+                    .padding(start = 20.dp, end = 12.dp, top = 14.dp, bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    if (selectedIds.isEmpty()) "选择节目" else "已选 ${selectedIds.size} 期",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = AppColors.Ink,
+                    modifier = Modifier.weight(1f)
+                )
+                TextButton(
+                    onClick = onOfflineSelected,
+                    enabled = selectedIds.isNotEmpty(),
+                    colors = ButtonDefaults.textButtonColors(
+                        contentColor = if (selectedIds.isEmpty()) AppColors.Muted else AppColors.Red
+                    )
+                ) {
+                    Text("离线缓存", fontWeight = FontWeight.Bold)
+                }
+                TextButton(onClick = onExitSelect) { Text("取消", color = AppColors.Muted) }
+            }
+        } else {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(start = 26.dp, end = 26.dp, top = 20.dp, bottom = 10.dp),
+                verticalAlignment = Alignment.Bottom
+            ) {
+                Text(
+                    state.category.name,
+                    style = if (compact) MaterialTheme.typography.headlineSmall
+                    else MaterialTheme.typography.displaySmall,
+                    color = AppColors.Ink,
+                    modifier = Modifier.alignByBaseline()
+                )
+                Spacer(Modifier.width(12.dp))
+                Text(
+                    buildString {
+                        if (archiveCount > 0) append("$archiveCount 期")
+                        else append("已加载 ${state.episodes.size} 期")
+                        append(" · 新到旧")
+                    },
+                    style = MaterialTheme.typography.labelMedium,
+                    color = AppColors.Muted,
+                    modifier = Modifier.alignByBaseline()
+                )
+            }
         }
 
         PullToRefreshBox(
@@ -223,7 +255,14 @@ fun EpisodeListPane(
                                 current = current,
                                 isPlaying = isPlaying,
                                 compact = compact,
-                                onClick = { onPlay(index) }
+                                selecting = selecting,
+                                selected = selectedIds.contains(episode.id),
+                                offline = offlineIds.contains(episode.id),
+                                pending = pendingIds.contains(episode.id),
+                                onClick = {
+                                    if (selecting) onToggleSelect(episode.id) else onPlay(index)
+                                },
+                                onLongClick = { onEnterSelect(episode) }
                             )
                         }
                         item(key = "footer") {
@@ -373,7 +412,12 @@ private fun EpisodeRow(
     current: Boolean,
     isPlaying: Boolean,
     compact: Boolean,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    selecting: Boolean = false,
+    selected: Boolean = false,
+    offline: Boolean = false,
+    pending: Boolean = false,
+    onLongClick: () -> Unit = {}
 ) {
     val done = progress?.done == true && !current
     val fraction = progress?.takeIf { it.durationMs > 0 }
@@ -381,12 +425,12 @@ private fun EpisodeRow(
     val showRail = !done && fraction > 0.02f && fraction < 0.98f
 
     val container by animateColorAsState(
-        targetValue = if (current) AppColors.RedWash else AppColors.Card,
+        targetValue = if (current || selected) AppColors.RedWash else AppColors.Card,
         animationSpec = tween(240),
         label = "rowContainer"
     )
     val edge by animateColorAsState(
-        targetValue = if (current) AppColors.RedEdge else Color.Transparent,
+        targetValue = if (current || selected) AppColors.RedEdge else Color.Transparent,
         animationSpec = tween(240),
         label = "rowEdge"
     )
@@ -408,13 +452,38 @@ private fun EpisodeRow(
             .clip(CardShape)
             .background(container)
             .border(2.dp, edge, CardShape)
-            .clickable(onClick = onClick)
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(
                 horizontal = if (compact) 14.dp else 16.dp,
                 vertical = if (compact) 11.dp else 13.dp
             ),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        // 多选模式：行首挂一个勾选框，点击整行即切换选中，不再触发播放
+        if (selecting) {
+            Box(
+                Modifier
+                    .size(26.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(if (selected) AppColors.Red else AppColors.Canvas)
+                    .border(
+                        width = 2.dp,
+                        color = if (selected) AppColors.Red else AppColors.Rail,
+                        shape = RoundedCornerShape(8.dp)
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                if (selected) {
+                    Icon(
+                        Icons.Filled.Check,
+                        contentDescription = "已选择",
+                        tint = Color.White,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+            }
+            Spacer(Modifier.width(12.dp))
+        }
         Column(Modifier.weight(1f)) {
             Text(
                 episode.title.ifBlank { episode.date },
@@ -478,6 +547,33 @@ private fun EpisodeRow(
                         tint = AppColors.RedDeep,
                         modifier = Modifier.size(14.dp)
                     )
+                }
+            }
+
+            offline || pending -> {
+                // 已离线缓存 / 正在下载：车机上「哪几期没网也能听」必须一眼可见
+                Spacer(Modifier.width(14.dp))
+                Box(
+                    Modifier
+                        .size(22.dp)
+                        .clip(CircleShape)
+                        .background(if (offline) AppColors.RedMist else AppColors.Canvas),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (!offline) {
+                        CircularProgressIndicator(
+                            Modifier.size(14.dp),
+                            strokeWidth = 2.dp,
+                            color = AppColors.Red
+                        )
+                    } else {
+                        Icon(
+                            Icons.Filled.CloudDownload,
+                            contentDescription = "已离线缓存",
+                            tint = AppColors.RedDeep,
+                            modifier = Modifier.size(14.dp)
+                        )
+                    }
                 }
             }
 
