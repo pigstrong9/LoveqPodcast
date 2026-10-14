@@ -31,6 +31,7 @@ import androidx.media3.session.SessionResult
 import androidx.media3.session.MediaSessionService
 import cn.loveq.podcast.LoveqApp
 import cn.loveq.podcast.R
+import cn.loveq.podcast.data.AudioParseException
 import cn.loveq.podcast.data.Episode
 import cn.loveq.podcast.data.EpisodeAudio
 import com.google.common.util.concurrent.Futures
@@ -293,7 +294,16 @@ class PlaybackService : MediaSessionService() {
             } catch (e: Exception) {
                 resolvingIndex = -1
                 pendingLoad = false
-                PlaybackEvents.report("加载节目失败，请检查网络后重试")
+                // 解析不到直链和断网是两回事：对前者提示「检查网络」，
+                // 只会让人跑去官网发现一切正常，却查不出是解析规则的问题
+                val label = episode.date.ifBlank { episode.title.ifBlank { "本期节目" } }
+                PlaybackEvents.report(
+                    if (e is AudioParseException) {
+                        "《$label》取不到音频地址，应用解析规则需要更新"
+                    } else {
+                        "《$label》加载失败，请检查网络后重试"
+                    }
+                )
             }
         }
     }

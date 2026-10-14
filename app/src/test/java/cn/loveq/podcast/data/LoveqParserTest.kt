@@ -128,4 +128,53 @@ class LoveqParserTest {
             LoveqParser.parseAudio(detail, base)
         }
     }
+
+    @Test
+    fun `后缀全大写的 MP3 也要能取到，否则那一期在应用里根本听不了`() {
+        // 官网真实页面：id 22905（2026.09.22）的直链是 2026.09.22.MP3
+        val detail = """
+            <html><body>
+            <audio src="http://dl.loveq.cn/live/audio/2003.mp3" preload="none"></audio>
+            <audio src="https://dl2.loveq.cn:8090/live/program/2026/2026.09.22.MP3?sign=133fb&amp;timestamp=1" preload="none"></audio>
+            </body></html>
+        """.trimIndent()
+
+        assertEquals(
+            "https://dl2.loveq.cn:8090/live/program/2026/2026.09.22.MP3?sign=133fb&timestamp=1",
+            LoveqParser.parseAudio(detail, base).url
+        )
+    }
+
+    @Test
+    fun `详情页上那一排年份试听片段不会盖掉本期正片`() {
+        // 每个详情页都挂着 2003..2013 的试听 audio，正片排最后：必须取正片
+        val detail = """
+            <html><body>
+            <audio src="http://dl.loveq.cn/live/audio/2003.mp3" preload="none"></audio>
+            <audio src="http://dl.loveq.cn/live/audio/2004.mp3" preload="none"></audio>
+            <audio src="http://dl.loveq.cn/live/audio/2013.mp3" preload="none"></audio>
+            <audio src="https://dl2.loveq.cn:8090/live/program/LoveQ.cn_2012-11-17.mp3?sign=b0118" preload="none"></audio>
+            </body></html>
+        """.trimIndent()
+
+        assertEquals(
+            "https://dl2.loveq.cn:8090/live/program/LoveQ.cn_2012-11-17.mp3?sign=b0118",
+            LoveqParser.parseAudio(detail, base).url
+        )
+    }
+
+    @Test
+    fun `换主机后即便路径带 live-audio 也不会被当试听片段排掉`() {
+        val detail = """
+            <html><body>
+            <audio src="http://dl.loveq.cn/live/audio/2003.mp3"></audio>
+            <audio src="https://dl2.loveq.cn:8090/live/audio/22915.mp3?sign=1"></audio>
+            </body></html>
+        """.trimIndent()
+
+        assertEquals(
+            "https://dl2.loveq.cn:8090/live/audio/22915.mp3?sign=1",
+            LoveqParser.parseAudio(detail, base).url
+        )
+    }
 }

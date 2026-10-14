@@ -42,7 +42,8 @@ object LoveqParser {
      * 解析详情页，取音频直链与节目标题。
      *
      * 多级 fallback：`<audio src>` → `<audio><source src>` → 正文里的 .mp3 链接，
-     * 只按 mp3 后缀筛、不硬编码下载服务器域名，官网换 CDN 无需改代码。
+     * 只按 mp3 后缀筛（不分大小写，见 [isAudioUrl]）、不硬编码下载服务器域名，
+     * 官网换 CDN 无需改代码。
      */
     fun parseAudio(html: String, baseUri: String): EpisodeAudio {
         val doc = Jsoup.parse(html, baseUri)
@@ -51,11 +52,11 @@ object LoveqParser {
                 doc.select("audio source[src]").map { it.attr("abs:src") } +
                 doc.select("a[href]").map { it.attr("abs:href") }
             )
-            .filter { it.startsWith("http") && it.substringBefore('?').endsWith(".mp3") }
+            .filter { it.startsWith("http") && isAudioUrl(it) }
             .distinct()
-        val url = urls.firstOrNull { it.contains("/live/program/") }
-            ?: urls.firstOrNull { !it.contains("/live/audio/") }
-            ?: throw IOException("音频地址解析失败")
+        val url = urls.firstOrNull { it.contains(PROGRAM_PATH) }
+            ?: urls.firstOrNull { !isSiteJingle(it) }
+            ?: throw AudioParseException("音频地址解析失败")
 
         val title = doc.select("li")
             .map { it.ownText().trim() }
@@ -66,4 +67,38 @@ object LoveqParser {
     }
 
     private fun pageParamOf(catId: Int): Regex = Regex("""cat_id=$catId&page=(\d+)""")
+
+    /**
+     * 音频后缀判定不分大小写。
+     *
+     * 官网存在 `2026.09.22.MP3` 这种全大写后缀的期（如 id 22905、22603）。
+     * 早先按小写 `.mp3` 精确匹配时，这类期的直链会被整条筛掉，页面上只剩站头片段，
+     * 于是 App 报「音频地址解析失败 / 加载节目失败」，而官网网页照常能听 —— 看着像断网，
+     * 其实是后缀大小写把真链接筛没了。
+     */
+    private fun isAudioUrl(url: String): Boolean =
+        url.substringBefore('?').substringBefore('#').endsWith(".mp3", ignoreCase = true)
+
+    /**
+     * 站头/年份试听片段（`http://dl.loveq.cn/live/audio/2003.mp3` 这一组）。
+     *
+     * 只按「这个站头主机的试听目录」排除，不要顺手把整条 `/live/audio/` 路径都当噪音：
+     * 节目正片一旦被挪到别的主机但该目录下，全局排除会让它再次解析失败。
+     */
+    private fun isSiteJingle(url: String): Boolean {
+        val lower = url.lowercase()
+        return lower.contains(JINGLE_HOST) && lower.contains(JINGLE_PATH)
+    }
+
+    private const val PROGRAM_PATH = "/live/program/"
+    private const val JINGLE_HOST = "dl.loveq.cn"
+    private const val JINGLE_PATH = "/live/audio/"
 }
+
+/**
+ * 页面里找不到本期音频直链：结构对不上、或后缀不认识。
+ *
+ * 和断网严格区分开：这类失败重试网络、去官网检查都白费（官网网页本来就能听），
+ * 真正需要的是更新解析规则。上层据此给不同的提示。
+ */
+class AudioParseException(message: String) : IOException(message)
