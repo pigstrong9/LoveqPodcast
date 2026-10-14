@@ -33,6 +33,8 @@ data class ListUiState(
     val loadingDown: Boolean = false,
     val loadingUp: Boolean = false,
     val jumping: Boolean = false,
+    /** 分页加载失败（区别于整表加载失败的 [error]）；footer 据此显示重试，空闲态不再误报失败 */
+    val loadMoreError: Boolean = false,
     val scrollResetToken: Int = 0,
     val error: String? = null
 ) {
@@ -103,6 +105,7 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
                 loadingDown = false,
                 loadingUp = false,
                 jumping = false,
+                loadMoreError = false,
                 scrollResetToken = it.scrollResetToken + 1,
                 error = null
             )
@@ -133,6 +136,7 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
                         loadedEndPage = 1,
                         totalPages = result.totalPages,
                         initialLoading = false,
+                        loadMoreError = false,
                         error = null
                     )
                 }
@@ -165,7 +169,9 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val result = repo.loadPage(1, catId)
                 if (loadGen != gen) return@launch
-                cache(catId, 1, result)
+                // 官网只增不删：刷新后旧的第 2..N 页缓存已整体后移，
+                // 继续复用它会和新的第 1 页拼出缺口，所以整类缓存只保留刚取到的第 1 页
+                pageCache[catId] = mutableMapOf(1 to result)
                 _state.update {
                     it.copy(
                         episodes = result.episodes,
@@ -174,6 +180,7 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
                         totalPages = result.totalPages,
                         initialLoading = false,
                         refreshing = false,
+                        loadMoreError = false,
                         error = null
                     )
                 }
@@ -194,7 +201,7 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
         val gen = loadGen
         val next = s.loadedEndPage + 1
         viewModelScope.launch {
-            _state.update { it.copy(loadingDown = true) }
+            _state.update { it.copy(loadingDown = true, loadMoreError = false) }
             try {
                 val result = cached(catId, next)
                     ?: repo.loadPage(next, catId).also { cache(catId, next, it) }
@@ -204,8 +211,10 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
                     if (it.loadedEndPage != next - 1) {
                         it.copy(loadingDown = false)
                     } else {
+                        // 去重兜底：万一页边界重叠，重复 id 会让 LazyColumn 的 key 冲突崩溃
+                        val existing = it.episodes.mapTo(HashSet<Long>(it.episodes.size * 2)) { e -> e.id }
                         it.copy(
-                            episodes = it.episodes + result.episodes,
+                            episodes = it.episodes + result.episodes.filterNot { e -> e.id in existing },
                             loadedEndPage = next,
                             totalPages = result.totalPages,
                             loadingDown = false
@@ -215,7 +224,7 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                if (loadGen == gen) _state.update { it.copy(loadingDown = false) }
+                if (loadGen == gen) _state.update { it.copy(loadingDown = false, loadMoreError = true) }
             }
         }
     }
@@ -236,8 +245,9 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
                     if (it.startPage != prev + 1) {
                         it.copy(loadingUp = false)
                     } else {
+                        val existing = it.episodes.mapTo(HashSet<Long>(it.episodes.size * 2)) { e -> e.id }
                         it.copy(
-                            episodes = result.episodes + it.episodes,
+                            episodes = result.episodes.filterNot { e -> e.id in existing } + it.episodes,
                             startPage = prev,
                             loadingUp = false
                         )
@@ -263,7 +273,8 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
                     initialLoading = false,
                     refreshing = false,
                     loadingDown = false,
-                    loadingUp = false
+                    loadingUp = false,
+                    loadMoreError = false
                 )
             }
             try {

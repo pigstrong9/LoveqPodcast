@@ -240,7 +240,9 @@ class PlaybackService : MediaSessionService() {
                 player.play()
                 pendingLoad = false
             } catch (e: CancellationException) {
-                resolvingIndex = -1
+                // 只有仍归自己时才清标记：被新任务取消的旧任务若无条件清掉，
+                // 会把新任务的「解析中」状态误清空，导致对同一期重复解析
+                if (resolvingIndex == index) resolvingIndex = -1
                 throw e
             } catch (e: Exception) {
                 resolvingIndex = -1

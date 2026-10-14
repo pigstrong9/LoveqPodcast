@@ -12,6 +12,7 @@ import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.FileOutputStream
 
 /**
  * 全部节目索引（id/日期/标题），供全库搜索使用。
@@ -75,11 +76,16 @@ class EpisodeIndexStore(context: Context) {
         _loading.value = true
         try {
             val all = _episodes.value.toMutableList()
+            // 断点续抓时官网可能已插入新节目、整表整体后移，续抓页与缓存页会重叠，
+            // 按 id 去重避免索引里出现重复项（重复 id 会让搜索列表的 LazyColumn key 冲突崩溃）
+            val seen = all.mapTo(HashSet<Long>(all.size * 2)) { it.id }
             var page = startPage
             while (true) {
                 val result = repository.loadPage(page)
                 totalPagesKnown = result.totalPages
-                all += result.episodes
+                for (episode in result.episodes) {
+                    if (seen.add(episode.id)) all += episode
+                }
                 pagesDone = page
                 _episodes.value = all.toList()
                 writeCache(all, page, result.totalPages)
@@ -153,7 +159,18 @@ class EpisodeIndexStore(context: Context) {
                 .put("pagesDone", pagesDone)
                 .put("totalPages", totalPages)
                 .put("episodes", arr)
-            file.writeText(obj.toString())
+            // 车机是直接断电的：先写临时文件并 fsync，再原子 rename 覆盖。
+            // 否则断电瞬间可能留下半截 JSON，下次启动解析失败 → 缓存作废、全量重抓。
+            val tmp = File(file.parentFile, "${file.name}.tmp")
+            FileOutputStream(tmp).use { out ->
+                out.write(obj.toString().toByteArray())
+                out.flush()
+                out.fd.sync()
+            }
+            if (!tmp.renameTo(file)) {
+                file.delete()
+                tmp.renameTo(file)
+            }
         } catch (_: Exception) {
         }
     }

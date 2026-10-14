@@ -165,8 +165,7 @@ fun PlayerSidePane(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth()
-                .padding(start = 26.dp, end = 26.dp, bottom = 10.dp),
-            stretch = true
+                .padding(start = 26.dp, end = 26.dp, bottom = 10.dp)
         )
     }
 }
@@ -564,8 +563,7 @@ private fun PlayerPanel(
     onBoost: (Int) -> Unit,
     onRequestTuning: () -> Unit,
     tuningVisible: Boolean,
-    modifier: Modifier = Modifier,
-    @Suppress("UNUSED_PARAMETER") stretch: Boolean = false
+    modifier: Modifier = Modifier
 ) {
     // 极矮面板（封面按下限兜底后仍放不下全部内容）允许纵向滚动，正常尺寸无感。
     // verticalScroll 会把高度约束变成无穷、居中随之失效（内容顶在上、下面一大片空白），

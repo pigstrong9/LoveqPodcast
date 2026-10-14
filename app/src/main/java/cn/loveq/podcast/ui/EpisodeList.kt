@@ -222,6 +222,7 @@ fun EpisodeListPane(
                             ListFooter(
                                 loading = state.loadingDown || state.jumping,
                                 endReached = state.endReached,
+                                error = state.loadMoreError,
                                 onRetry = loadNext
                             )
                         }
@@ -475,7 +476,7 @@ private fun EpisodeRow(
 }
 
 @Composable
-private fun ListFooter(loading: Boolean, endReached: Boolean, onRetry: () -> Unit) {
+private fun ListFooter(loading: Boolean, endReached: Boolean, error: Boolean, onRetry: () -> Unit) {
     Box(
         Modifier.fillMaxWidth().padding(vertical = 18.dp),
         contentAlignment = Alignment.Center
@@ -488,7 +489,8 @@ private fun ListFooter(loading: Boolean, endReached: Boolean, onRetry: () -> Uni
                 color = AppColors.Muted
             )
 
-            else -> TextButton(onClick = onRetry) { Text("加载失败，点此重试") }
+            // 仅真正失败才提示重试；空闲态（尚未触发下一页、跳转后等）保持空白
+            error -> TextButton(onClick = onRetry) { Text("加载失败，点此重试") }
         }
     }
 }
