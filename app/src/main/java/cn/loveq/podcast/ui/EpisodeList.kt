@@ -90,7 +90,15 @@ fun EpisodeListPane(
     modifier: Modifier = Modifier,
     compact: Boolean = false,
     /** 底部要避让的浮层高度（迷你胶囊浮在列表上时传入），默认不避让 */
-    bottomInset: Dp = 0.dp
+    bottomInset: Dp = 0.dp,
+    /** 长按进入的批量选择模式 */
+    selecting: Boolean = false,
+    selectedIds: Set<Long> = emptySet(),
+    offlineIds: Set<Long> = emptySet(),
+    onEnterSelect: (Episode) -> Unit = {},
+    onToggleSelect: (Long) -> Unit = {},
+    onExitSelect: () -> Unit = {},
+    onOfflineSelected: () -> Unit = {}
 ) {
     val listState = rememberLazyListState()
     val episodeCount = state.episodes.size

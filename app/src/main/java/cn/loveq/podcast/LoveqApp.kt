@@ -1,6 +1,7 @@
 package cn.loveq.podcast
 
 import android.app.Application
+import cn.loveq.podcast.data.DownloadManager
 import cn.loveq.podcast.data.EpisodeIndexStore
 import cn.loveq.podcast.data.LoveqRepository
 import cn.loveq.podcast.data.ProgressStore
@@ -17,6 +18,8 @@ class LoveqApp : Application() {
         private set
     lateinit var queueStore: QueueStore
         private set
+    lateinit var downloads: DownloadManager
+        private set
 
     override fun onCreate() {
         super.onCreate()
@@ -25,6 +28,7 @@ class LoveqApp : Application() {
         progressStore = ProgressStore(this)
         indexStore = EpisodeIndexStore(this)
         queueStore = QueueStore(this)
+        downloads = DownloadManager(this, repository)
         VolumeBoost.apply(progressStore.boostPercent)
     }
 }

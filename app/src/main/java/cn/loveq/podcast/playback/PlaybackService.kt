@@ -14,6 +14,7 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.audio.AudioProcessor
+import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.cache.CacheKeyFactory
@@ -29,6 +30,7 @@ import androidx.media3.session.MediaSessionService
 import cn.loveq.podcast.LoveqApp
 import cn.loveq.podcast.R
 import cn.loveq.podcast.data.Episode
+import cn.loveq.podcast.data.EpisodeAudio
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import kotlinx.coroutines.CancellationException
@@ -72,11 +74,14 @@ class PlaybackService : MediaSessionService() {
         app = applicationContext as LoveqApp
 
         val cache = MediaCache.get(this)
-        val dataSourceFactory = CacheDataSource.Factory()
+        val cachingFactory = CacheDataSource.Factory()
             .setCache(cache)
             .setCacheKeyFactory(CacheKeyFactory { dataSpec -> MediaCache.keyOf(dataSpec.uri) })
             .setUpstreamDataSourceFactory(DefaultHttpDataSource.Factory())
             .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+        // 包一层按 scheme 分流：http(s) 走带缓存的上游，file:// 直接走本地文件
+        // （离线缓存好的整集不再需要签名直链，没网也能播）
+        val dataSourceFactory = DefaultDataSource.Factory(this, cachingFactory)
 
         val exoPlayer = ExoPlayer.Builder(this)
             .setRenderersFactory(BoostRenderersFactory(this))
@@ -251,7 +256,10 @@ class PlaybackService : MediaSessionService() {
         currentJob?.cancel()
         currentJob = scope.launch {
             try {
-                val audio = app.repository.fetchAudio(episode.id)
+                // 离线缓存过的整集直接播本地文件：不取签名直链，断网也能播
+                val local = app.downloads.localFile(episode.id)
+                val audio = local?.let { EpisodeAudio(Uri.fromFile(it).toString(), null) }
+                    ?: app.repository.fetchAudio(episode.id)
                 resolvingIndex = -1
                 if (index != player.currentMediaItemIndex) return@launch
                 val item = lazyItem(episode)
@@ -371,6 +379,8 @@ class PlaybackService : MediaSessionService() {
                 val ended = endedId?.let { episodeOf(it) }
                 if (ended != null) {
                     app.progressStore.markDone(ended.id, currentTitle, ended.date)
+                    // 离线缓存的节目听完就删：车机存储有限，留着也没用了
+                    app.downloads.remove(ended.id)
                 }
                 // 仅当结束的正是当前队列项且没有用户点播在途时才自动连播
                 val canAdvance = !pendingLoad && endedId != null &&
