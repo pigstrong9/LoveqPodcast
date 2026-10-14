@@ -423,6 +423,7 @@ fun AppScreen(
             cacheBytes = cacheBytes,
             downloads = downloads,
             onRemove = viewModel::removeOffline,
+            onRetry = viewModel::retryOffline,
             onCleared = { cacheTick++ },
             onDismiss = { settingsOpen = false }
         )
@@ -527,6 +528,7 @@ private fun CacheDialog(
     cacheBytes: Long?,
     downloads: List<DownloadManager.Entry>,
     onRemove: (Long) -> Unit,
+    onRetry: (Long) -> Unit,
     onCleared: () -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -595,6 +597,13 @@ private fun CacheDialog(
                                     AppColors.Muted
                                 }
                             )
+                            // 失败不会自己重来：条目还占着列表，
+                            // 重新长按「缓存」又会被当成已存在而跳过，只能在这里重试
+                            if (entry.state == DownloadManager.State.FAILED) {
+                                TextButton(onClick = { onRetry(entry.episode.id) }) {
+                                    Text("重试", color = AppColors.RedDeep)
+                                }
+                            }
                             TextButton(onClick = { onRemove(entry.episode.id) }) {
                                 Text("删除", color = AppColors.Muted)
                             }

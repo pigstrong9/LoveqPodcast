@@ -392,6 +392,9 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
     /** 手动删除，或听完由服务自动调用 */
     fun removeOffline(episodeId: Long) = loveqApp.downloads.remove(episodeId)
 
+    /** 缓存失败的期重新排队（条目仍在列表里，不重试就再也不会自己开始） */
+    fun retryOffline(episodeId: Long) = loveqApp.downloads.retry(episodeId)
+
     fun togglePlayPause() = connection.togglePlayPause()
     fun seekTo(positionMs: Long) = connection.seekTo(positionMs)
     fun seekBack() = connection.seekBack()

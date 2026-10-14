@@ -4,9 +4,8 @@ import android.content.Context
 import android.os.StatFs
 import cn.loveq.podcast.playback.PlaybackEvents
 import java.io.File
-import java.io.FileOutputStream
-import java.io.IOException
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -15,11 +14,14 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.FileOutputStream
+import java.io.IOException
 
 /**
  * 批量离线缓存。
@@ -46,7 +48,20 @@ class DownloadManager(context: Context, private val repository: LoveqRepository)
     private val _downloads = MutableStateFlow<List<Entry>>(emptyList())
     val downloads: StateFlow<List<Entry>> = _downloads
 
+    /**
+     * 队列状态（[_downloads]）会被两边同时改：UI 线程排队/删除，下载线程回写进度。
+     * 所有「读出来算一遍再写回」的地方都必须在这把锁里，否则后写的会整片覆盖前者的结果
+     * ——表现为选了三期只排进去两期。纯替换用的 [updateEntry] 走 StateFlow 的 CAS，无需加锁。
+     */
+    private val stateLock = Any()
+
     private var worker: Job? = null
+
+    /**
+     * 流水线代号：取消/删除会掐掉当前流水线并重启一条新的。
+     * 旧协程收尾时靠它认出自己已经不是当前流水线，就不会去清掉新流水线的状态。
+     */
+    private var pipelineId = 0L
 
     enum class State { QUEUED, DOWNLOADING, DONE, FAILED }
 
@@ -85,22 +100,40 @@ class DownloadManager(context: Context, private val repository: LoveqRepository)
             )
             return
         }
-        _downloads.value = _downloads.value + pending.map { Entry(it, State.QUEUED, 0, 0) }
+        // CAS 追加：下载线程正在回写进度时也不能把刚排进来的期覆盖掉
+        _downloads.update { list -> list + pending.map { Entry(it, State.QUEUED, 0, 0) } }
+        persist()
+        pump()
+    }
+
+    /** 失败重试：FAILED 条目还留在列表里，不重置状态的话重新「缓存」会被当成已存在而跳过 */
+    fun retry(episodeId: Long) {
+        updateEntry(episodeId) {
+            if (it.state == State.FAILED) it.copy(state = State.QUEUED, bytes = 0, totalBytes = 0) else it
+        }
         persist()
         pump()
     }
 
     fun cancel(episodeId: Long) {
-        if (currentEpisodeId == episodeId) worker?.cancel()
-        _downloads.value = _downloads.value.filterNot { it.episode.id == episodeId }
+        synchronized(stateLock) {
+            if (currentEpisodeId == episodeId) stopPipelineLocked()
+            _downloads.value = _downloads.value.filterNot { it.episode.id == episodeId }
+            if (currentEpisodeId == episodeId) currentEpisodeId = -1L
+        }
         File(dir, "$episodeId.mp3.part").delete()
         persist()
         pump()
     }
 
-    /** 听完自动删除，或用户在缓存页手动删除 */
+    /** 手动删除，或听完由服务自动调用 */
     fun remove(episodeId: Long) {
-        _downloads.value = _downloads.value.filterNot { it.episode.id == episodeId }
+        synchronized(stateLock) {
+            // 正在下的这一期被删掉，必须掐掉流水线：否则它会继续写 .part，
+            // 结束时改名成正式文件，刚删的节目又自己回来了
+            if (currentEpisodeId == episodeId) stopPipelineLocked()
+            _downloads.value = _downloads.value.filterNot { it.episode.id == episodeId }
+        }
         File(dir, "$episodeId.mp3").delete()
         File(dir, "$episodeId.mp3.part").delete()
         persist()
@@ -116,17 +149,67 @@ class DownloadManager(context: Context, private val repository: LoveqRepository)
     @Volatile
     private var currentEpisodeId: Long = -1L
 
+    /** 启动（或重启）一条串行流水线。必须在 [stateLock] 内调用 */
     private fun pump() {
-        if (worker?.isActive == true) return
-        val next = _downloads.value.firstOrNull { it.state == State.QUEUED } ?: return
+        synchronized(stateLock) {
+            if (worker?.isActive == true) return
+            val pipeline = ++pipelineId
+            worker = scope.launch { drain(pipeline) }
+        }
+    }
+
+    /** 掐掉当前流水线。必须在 [stateLock] 内调用 */
+    private fun stopPipelineLocked() {
+        pipelineId++
+        worker?.cancel()
+        worker = null
+    }
+
+    /**
+     * 串行推进整条队列：一期下完立刻接下一期，直到没有排队项。
+     *
+     * 写成循环而不是「下完一期后再 pump() 一次」——download() 就跑在 worker 自己的协程里，
+     * 从它内部调 pump() 时 worker 仍然 isActive，pump 的守卫会直接返回，
+     * 于是批量下载只下第一期，后面排队的永远不动（要等下次删除/重启才偶然接上下一期）。
+     */
+    private suspend fun drain(pipeline: Long) {
+        while (true) {
+            currentCoroutineContext().ensureActive()
+            val next = claimNext(pipeline)
+            if (next == null) {
+                // 队列看着空了，但「交还推进权」和「确认没活了」必须在同一把锁里做完：
+                // 否则用户刚好在这一瞬排进来几期，pump() 会因「worker 还活着」直接返回，
+                // 这几期就没人接手了
+                if (retireIfIdle(pipeline)) return
+                continue
+            }
+            download(next, pipeline)
+        }
+    }
+
+    /** 队列确实没有排队项就交还推进权并退出；期间排进来了就继续跑，返回 false */
+    private fun retireIfIdle(pipeline: Long): Boolean = synchronized(stateLock) {
+        if (pipeline != pipelineId) return true
+        if (_downloads.value.none { it.state == State.QUEUED }) {
+            worker = null
+            true
+        } else {
+            false
+        }
+    }
+
+    /** 取队首的排队项并原子标记为下载中；返回 null 表示队列已空或本流水线已作废 */
+    private fun claimNext(pipeline: Long): Episode? = synchronized(stateLock) {
+        if (pipeline != pipelineId) return null
+        val next = _downloads.value.firstOrNull { it.state == State.QUEUED } ?: return null
         _downloads.value = _downloads.value.map {
             if (it.episode.id == next.episode.id) it.copy(state = State.DOWNLOADING) else it
         }
         currentEpisodeId = next.episode.id
-        worker = scope.launch { download(next.episode) }
+        next.episode
     }
 
-    private suspend fun download(episode: Episode) {
+    private suspend fun download(episode: Episode, pipeline: Long) {
         val target = File(dir, "${episode.id}.mp3")
         val part = File(dir, "${episode.id}.mp3.part")
         try {
@@ -136,7 +219,7 @@ class DownloadManager(context: Context, private val repository: LoveqRepository)
                 if (!response.isSuccessful) throw IOException("HTTP ${response.code}")
                 val body = response.body ?: throw IOException("空响应")
                 val total = body.contentLength()
-                update(episode.id) { it.copy(totalBytes = total) }
+                updateEntry(episode.id) { it.copy(totalBytes = total) }
                 FileOutputStream(part).use { out ->
                     body.byteStream().use { input ->
                         val buf = ByteArray(64 * 1024)
@@ -150,7 +233,7 @@ class DownloadManager(context: Context, private val repository: LoveqRepository)
                             written += n
                             // 每 ~256KB 报一次进度，避免高频重组
                             if (written / PROGRESS_STEP != (written - n) / PROGRESS_STEP) {
-                                update(episode.id) { it.copy(bytes = written) }
+                                updateEntry(episode.id) { it.copy(bytes = written) }
                             }
                         }
                         out.flush()
@@ -158,29 +241,31 @@ class DownloadManager(context: Context, private val repository: LoveqRepository)
                     }
                 }
             }
+            // 取消发生在收尾时也要停下，别让已取消的一期又落出正式文件
+            currentCoroutineContext().ensureActive()
             if (!part.renameTo(target)) throw IOException("重命名失败")
             // 下完不从列表里剔除：列表同时是「哪几期离线可听」的唯一数据源，
             // 列表徽标和缓存页都靠它
-            update(episode.id) { it.copy(state = State.DONE, bytes = target.length()) }
+            updateEntry(episode.id) { it.copy(state = State.DONE, bytes = target.length()) }
         } catch (e: Exception) {
             part.delete()
-            if (e is kotlinx.coroutines.CancellationException) {
-                _downloads.value = _downloads.value.filterNot { it.episode.id == episode.id }
+            if (e is CancellationException) {
+                _downloads.update { list -> list.filterNot { it.episode.id == episode.id } }
                 throw e
             }
-            update(episode.id) { it.copy(state = State.FAILED) }
-            PlaybackEvents.report("《${episode.date}》离线缓存失败，可重试")
+            updateEntry(episode.id) { it.copy(state = State.FAILED) }
+            PlaybackEvents.report("《${episode.date}》离线缓存失败，可点重试")
         } finally {
             persist()
-            currentEpisodeId = -1L
-            pump()
+            synchronized(stateLock) {
+                // 只有仍归本流水线时才清，否则会把刚重启的流水线「当前期」误清空
+                if (pipeline == pipelineId) currentEpisodeId = -1L
+            }
         }
     }
 
-    private fun update(id: Long, transform: (Entry) -> Entry) {
-        _downloads.value = _downloads.value.map {
-            if (it.episode.id == id) transform(it) else it
-        }
+    private fun updateEntry(id: Long, transform: (Entry) -> Entry) {
+        _downloads.update { list -> list.map { if (it.episode.id == id) transform(it) else it } }
     }
 
     private fun persist() {
@@ -239,13 +324,15 @@ class DownloadManager(context: Context, private val repository: LoveqRepository)
             emptyList()
         }
         // 磁盘上有完整文件的直接标 DONE（不重下）；清单说下完了但文件已不在的，重新排队
-        _downloads.value = list.map { entry ->
-            File(dir, "${entry.episode.id}.mp3.part").delete()
-            val f = localFile(entry.episode.id)
-            when {
-                f != null -> entry.copy(state = State.DONE, bytes = f.length(), totalBytes = f.length())
-                entry.state == State.DONE -> entry.copy(state = State.QUEUED, bytes = 0)
-                else -> entry
+        synchronized(stateLock) {
+            _downloads.value = list.map { entry ->
+                File(dir, "${entry.episode.id}.mp3.part").delete()
+                val f = localFile(entry.episode.id)
+                when {
+                    f != null -> entry.copy(state = State.DONE, bytes = f.length(), totalBytes = f.length())
+                    entry.state == State.DONE -> entry.copy(state = State.QUEUED, bytes = 0)
+                    else -> entry
+                }
             }
         }
         persist()
