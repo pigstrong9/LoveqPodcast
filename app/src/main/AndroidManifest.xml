@@ -16,12 +16,15 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.LoveqPodcast">
 
+        <!-- 刻意不再吞掉 orientation|screenSize|screenLayout|smallestScreenSize|density：
+             车机 360° 旋转或分屏调整后，自处理配置变更会留下陈旧的窗口度量（窗口位置/尺寸错位，
+             退出重进才好）。让 Activity 重建等于自动「退出重进」，播放由前台服务续着不受影响 -->
         <activity
             android:name=".ui.MainActivity"
             android:exported="true"
             android:launchMode="singleTask"
             android:resizeableActivity="true"
-            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|density|uiMode">
+            android:configChanges="keyboard|keyboardHidden|navigation|uiMode|fontScale|locale|layoutDirection">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
