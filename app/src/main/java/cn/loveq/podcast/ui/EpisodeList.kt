@@ -184,6 +184,16 @@ fun EpisodeListPane(
             }
         }
 
+        // 断网兜底：列表来自本地索引而不是官网，必须说清楚，否则用户以为只有这么多期
+        if (!selecting && state.offline) {
+            Text(
+                "离线中 · 显示本地索引，联网后下拉刷新",
+                style = MaterialTheme.typography.labelMedium,
+                color = AppColors.RedDeep,
+                modifier = Modifier.padding(start = 26.dp, bottom = 6.dp)
+            )
+        }
+
         PullToRefreshBox(
             isRefreshing = state.refreshing,
             onRefresh = refresh,

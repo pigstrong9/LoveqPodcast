@@ -35,6 +35,8 @@ data class ListUiState(
     val jumping: Boolean = false,
     /** 分页加载失败（区别于整表加载失败的 [error]）；footer 据此显示重试，空闲态不再误报失败 */
     val loadMoreError: Boolean = false,
+    /** 列表来自本地索引而非官网：断网兜底，需要在界面上说清楚 */
+    val offline: Boolean = false,
     val scrollResetToken: Int = 0,
     val error: String? = null
 ) {
@@ -136,6 +138,7 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
                         loadedEndPage = 1,
                         totalPages = result.totalPages,
                         initialLoading = false,
+                        offline = false,
                         loadMoreError = false,
                         error = null
                     )
@@ -144,8 +147,30 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
                 throw e
             } catch (e: Exception) {
                 if (loadGen != gen) return@launch
-                _state.update {
-                    it.copy(initialLoading = false, error = "加载失败：${e.message ?: "网络异常"}")
+                // 断网不该只给一屏错误：粤语节目有全库磁盘索引，
+                // 离线时照样能翻列表、续播已缓存的期
+                val fallback = if (catId == Category.CANTONESE_ID) {
+                    loveqApp.indexStore.episodes.value
+                } else {
+                    emptyList()
+                }
+                if (fallback.isEmpty()) {
+                    _state.update {
+                        it.copy(initialLoading = false, error = "加载失败：${e.message ?: "网络异常"}")
+                    }
+                } else {
+                    _state.update {
+                        it.copy(
+                            episodes = fallback.take(PAGE_SIZE),
+                            startPage = 1,
+                            loadedEndPage = 1,
+                            totalPages = 1,
+                            initialLoading = false,
+                            loadMoreError = false,
+                            offline = true,
+                            error = null
+                        )
+                    }
                 }
             }
         }
@@ -179,6 +204,7 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
                         loadedEndPage = 1,
                         totalPages = result.totalPages,
                         initialLoading = false,
+                        offline = false,
                         refreshing = false,
                         loadMoreError = false,
                         error = null
@@ -378,6 +404,9 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
 
     private companion object {
         const val QUEUE_AHEAD = 50
+
+        /** 官网一页的条数，离线兜底时按同样的长度切一片 */
+        const val PAGE_SIZE = 26
         const val REQUEST_DELAY_MS = 200L
     }
 }
