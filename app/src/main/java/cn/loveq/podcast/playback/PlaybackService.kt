@@ -55,6 +55,7 @@ class PlaybackService : MediaSessionService() {
     private var restoredQueue: QueueStore.Snapshot? = null
     private var currentTitle = ""
     private var urlRetries = 0
+    private var networkRetries = 0
     private var currentJob: Job? = null
 
     /** 直链过期后的退避重取，与解析任务分开，避免互相取消 */
@@ -288,7 +289,7 @@ class PlaybackService : MediaSessionService() {
             } catch (e: Exception) {
                 resolvingIndex = -1
                 pendingLoad = false
-                PlaybackEvents.tryEmit("加载节目失败，请检查网络后重试")
+                PlaybackEvents.report("加载节目失败，请检查网络后重试")
             }
         }
     }
@@ -305,8 +306,18 @@ class PlaybackService : MediaSessionService() {
         if (startPos > 0) player.seekTo(startPos)
     }
 
+    /** 退避一段时间后重新解析并续播（直链过期、网络抖动共用） */
+    private fun scheduleResume(delayMs: Long, notice: String?) {
+        if (notice != null) PlaybackEvents.report(notice)
+        retryJob?.cancel()
+        retryJob = scope.launch {
+            delay(delayMs)
+            resumeCurrentWithFreshUrl()
+        }
+    }
+
     private fun resumeCurrentWithFreshUrl() {
-        // 地址过期要重新解析，先清掉「正在解析」标记
+        // 地址过期/断流要重新解析，先清掉「正在解析」标记，否则会被自己的守卫挡掉
         resolvingIndex = -1
         // playWhenReady 才代表用户的播放意图：出错时 isPlaying 已经是 false，
         // 用它判断会把「用户主动暂停」也误恢复成播放
@@ -370,8 +381,9 @@ class PlaybackService : MediaSessionService() {
 
         override fun onPlaybackStateChanged(playbackState: Int) {
             if (playbackState == Player.STATE_READY) {
-                // 能正常出声音说明直链有效，重试计数归零
+                // 能正常出声音说明直链和网络都恢复了，两类重试计数归零
                 urlRetries = 0
+                networkRetries = 0
                 return
             }
             if (playbackState == Player.STATE_ENDED) {
@@ -395,17 +407,24 @@ class PlaybackService : MediaSessionService() {
         override fun onPlayerError(error: PlaybackException) {
             // 占位地址（还没解析出真实直链）导致的加载失败，不算真错误
             if (pendingLoad) return
-            val httpError = error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS
-            if (httpError && urlRetries < MAX_URL_RETRIES) {
-                urlRetries++
-                // 退避后再重取直链：连续 405 时不要立刻再抓一遍站
-                retryJob?.cancel()
-                retryJob = scope.launch {
-                    delay(URL_RETRY_BACKOFF_MS * urlRetries)
-                    resumeCurrentWithFreshUrl()
+            val code = error.errorCode
+            when {
+                code == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS &&
+                    urlRetries < MAX_URL_RETRIES -> {
+                    urlRetries++
+                    // 退避后再重取直链：连续 405 时不要立刻再抓一遍站
+                    scheduleResume(URL_RETRY_BACKOFF_MS * urlRetries, null)
                 }
-            } else {
-                PlaybackEvents.tryEmit("播放出错：${error.errorCodeName}")
+                // 行车途中最常见的是信号抖动/短暂断网，静默停在错误态最烦人
+                code in NETWORK_ERRORS && player.playWhenReady &&
+                    networkRetries < MAX_NETWORK_RESUMES -> {
+                    networkRetries++
+                    scheduleResume(
+                        NETWORK_RESUME_BACKOFF_MS * networkRetries,
+                        "网络中断，正在重试（$networkRetries/$MAX_NETWORK_RESUMES）"
+                    )
+                }
+                else -> PlaybackEvents.report("播放出错：${error.errorCodeName}")
             }
         }
 
@@ -453,6 +472,14 @@ class PlaybackService : MediaSessionService() {
         private const val RESUME_EPSILON_MS = 30_000L
         private const val MAX_URL_RETRIES = 2
         private const val URL_RETRY_BACKOFF_MS = 2_000L
+
+        /** 断网/超时这类可以等网络回来自己续上，和「直链过期」要分开处理 */
+        private val NETWORK_ERRORS = setOf(
+            PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
+            PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT
+        )
+        private const val MAX_NETWORK_RESUMES = 4
+        private const val NETWORK_RESUME_BACKOFF_MS = 5_000L
     }
 
     /** 通知栏/锁屏的专辑图：直接用应用内的主持人封面 */

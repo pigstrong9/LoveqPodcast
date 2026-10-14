@@ -215,7 +215,7 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: Exception) {
                 if (loadGen != gen) return@launch
                 _state.update { it.copy(refreshing = false, initialLoading = false) }
-                PlaybackEvents.tryEmit("刷新失败，请检查网络")
+                PlaybackEvents.report("刷新失败，请检查网络")
             }
         }
     }
@@ -338,12 +338,12 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
                         )
                     }
                 } else {
-                    PlaybackEvents.tryEmit("没有找到 $year 年的节目")
+                    PlaybackEvents.report("没有找到 $year 年的节目")
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                if (loadGen == gen) PlaybackEvents.tryEmit("跳转失败，请检查网络")
+                if (loadGen == gen) PlaybackEvents.report("跳转失败，请检查网络")
             } finally {
                 if (loadGen == gen) _state.update { it.copy(jumping = false) }
             }

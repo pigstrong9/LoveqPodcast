@@ -79,7 +79,7 @@ class DownloadManager(context: Context, private val repository: LoveqRepository)
         val need = pending.size * ESTIMATED_BYTES
         val free = StatFs(dir.absolutePath).availableBytes
         if (free < need) {
-            PlaybackEvents.tryEmit(
+            PlaybackEvents.report(
                 "空间不足：缓存 ${pending.size} 期约需 ${need / MB} MB，" +
                     "当前仅剩 ${free / MB} MB"
             )
@@ -169,7 +169,7 @@ class DownloadManager(context: Context, private val repository: LoveqRepository)
                 throw e
             }
             update(episode.id) { it.copy(state = State.FAILED) }
-            PlaybackEvents.tryEmit("《${episode.date}》离线缓存失败，可重试")
+            PlaybackEvents.report("《${episode.date}》离线缓存失败，可重试")
         } finally {
             persist()
             currentEpisodeId = -1L

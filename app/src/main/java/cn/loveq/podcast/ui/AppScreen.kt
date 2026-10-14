@@ -443,10 +443,13 @@ private fun currentEpisode(
 @Composable
 private fun ErrorToasts() {
     val context = LocalContext.current
-    LaunchedEffect(Unit) {
-        PlaybackEvents.errors.collect { message ->
-            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
-        }
+    // 错误存成可回放的状态：息屏/后台期间发生的错误回到界面后仍能补提示，
+    // 不像 SharedFlow 那样在没人订阅时被直接丢掉
+    val message by PlaybackEvents.error.collectAsStateWithLifecycle()
+    LaunchedEffect(message) {
+        val text = message ?: return@LaunchedEffect
+        Toast.makeText(context, text, Toast.LENGTH_SHORT).show()
+        PlaybackEvents.consume()
     }
 }
 
