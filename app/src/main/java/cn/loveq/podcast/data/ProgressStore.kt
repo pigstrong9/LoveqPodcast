@@ -2,6 +2,7 @@ package cn.loveq.podcast.data
 
 import android.content.Context
 import android.content.SharedPreferences
+import java.util.concurrent.Executors
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import org.json.JSONObject
@@ -14,6 +15,20 @@ class ProgressStore(context: Context) {
 
     private val prefs: SharedPreferences =
         context.getSharedPreferences("loveq_progress", Context.MODE_PRIVATE)
+
+    /**
+     * 车机是直接断电的，apply() 只保证内存立即可见、落盘交给系统后台线程，
+     * 熄火时最近几次进度可能压根没写到闪存上。
+     * 所以所有写都走这个单线程队列 + commit()：串行保证后写的不会先落盘，
+     * commit() 保证函数返回时数据已经真正写下去。
+     */
+    private val writes = Executors.newSingleThreadExecutor()
+
+    /**
+     * 时长单独在内存里留一份：落盘改成异步后，prefs 的内存表要等队列任务跑完才更新，
+     * 直接从 prefs 读会读到滞后值（「听完标记」紧跟在一次 save 之后，最容易踩到）。
+     */
+    private val durations = HashMap<Long, Long>()
 
     private val _progressMap = MutableStateFlow<Map<Long, Progress>>(emptyMap())
     val progressMap: StateFlow<Map<Long, Progress>> = _progressMap
@@ -49,6 +64,11 @@ class ProgressStore(context: Context) {
                     )
                 }
                 key == KEY_LAST -> lastId = (value as? Long)
+                key.startsWith(KEY_DUR) -> {
+                    val id = key.removePrefix(KEY_DUR).toLongOrNull() ?: continue
+                    val dur = (value as? Long) ?: 0L
+                    if (dur > 0) durations[id] = dur
+                }
             }
         }
         _progressMap.value = map
@@ -58,47 +78,57 @@ class ProgressStore(context: Context) {
     @Synchronized
     fun save(id: Long, positionMs: Long, durationMs: Long, title: String, date: String) {
         val pos = positionMs.coerceAtLeast(0)
-        val dur = if (durationMs > 0) durationMs else prefs.getLong(KEY_DUR + id, 0L)
+        val dur = if (durationMs > 0) durationMs
+        else durations[id] ?: prefs.getLong(KEY_DUR + id, 0L)
+        if (dur > 0) durations[id] = dur
         val done = dur > 0 && pos >= dur - DONE_EPSILON
         val now = System.currentTimeMillis()
-        prefs.edit()
-            .putLong(KEY_POS + id, pos)
-            .putLong(KEY_DUR + id, dur)
-            .putBoolean(KEY_DONE + id, done)
-            .putLong(KEY_TIME + id, now)
-            .putString(KEY_META + id, JSONObject().put("title", title).put("date", date).toString())
-            .putLong(KEY_LAST, id)
-            .apply()
+        persist(
+            prefs.edit()
+                .putLong(KEY_POS + id, pos)
+                .putLong(KEY_DUR + id, dur)
+                .putBoolean(KEY_DONE + id, done)
+                .putLong(KEY_TIME + id, now)
+                .putString(KEY_META + id, JSONObject().put("title", title).put("date", date).toString())
+                .putLong(KEY_LAST, id)
+        )
         _progressMap.value = _progressMap.value + (id to Progress(id, pos, dur, done, title, date, now))
         _lastId.value = id
     }
 
     @Synchronized
     fun markDone(id: Long, title: String, date: String) {
-        val dur = prefs.getLong(KEY_DUR + id, 0L)
+        val dur = durations[id] ?: prefs.getLong(KEY_DUR + id, 0L)
+        if (dur > 0) durations[id] = dur
         val now = System.currentTimeMillis()
-        prefs.edit()
-            .putLong(KEY_POS + id, dur)
-            .putLong(KEY_DUR + id, dur)
-            .putBoolean(KEY_DONE + id, true)
-            .putLong(KEY_TIME + id, now)
-            .putString(KEY_META + id, JSONObject().put("title", title).put("date", date).toString())
-            .putLong(KEY_LAST, id)
-            .apply()
+        persist(
+            prefs.edit()
+                .putLong(KEY_POS + id, dur)
+                .putLong(KEY_DUR + id, dur)
+                .putBoolean(KEY_DONE + id, true)
+                .putLong(KEY_TIME + id, now)
+                .putString(KEY_META + id, JSONObject().put("title", title).put("date", date).toString())
+                .putLong(KEY_LAST, id)
+        )
         _progressMap.value = _progressMap.value + (id to Progress(id, dur, dur, true, title, date, now))
         _lastId.value = id
+    }
+
+    /** 交给单线程队列落盘：既保证顺序，也保证真正写进闪存 */
+    private fun persist(editor: SharedPreferences.Editor) {
+        writes.execute { editor.commit() }
     }
 
     fun get(id: Long): Progress? = _progressMap.value[id]
 
     var speed: Float
         get() = prefs.getFloat(KEY_SPEED, 1.0f)
-        set(value) = prefs.edit().putFloat(KEY_SPEED, value).apply()
+        set(value) = persist(prefs.edit().putFloat(KEY_SPEED, value))
 
     /** 软件音量增强档位，100 表示不增强 */
     var boostPercent: Int
         get() = prefs.getInt(KEY_BOOST, 100)
-        set(value) = prefs.edit().putInt(KEY_BOOST, value).apply()
+        set(value) = persist(prefs.edit().putInt(KEY_BOOST, value))
 
     private companion object {
         const val KEY_POS = "pos_"
