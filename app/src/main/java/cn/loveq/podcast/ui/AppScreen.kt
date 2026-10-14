@@ -47,6 +47,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -106,8 +107,10 @@ fun AppScreen(
 
     val lastProgress = lastId?.let { progressMap[it] }
 
-    var searchOpen by remember { mutableStateOf(false) }
-    var searchQuery by remember { mutableStateOf("") }
+    // 车机分屏调整尺寸会重建 Activity：弹层/收起态用 Saveable 持有，
+    // 否则正在收听时面板会突然重新弹出、搜索层直接被关掉
+    var searchOpen by rememberSaveable { mutableStateOf(false) }
+    var searchQuery by rememberSaveable { mutableStateOf("") }
     val searchResults = remember(searchQuery, index) {
         val terms = searchQuery.trim().split(Regex("\\s+")).filter { it.isNotBlank() }
         if (terms.isEmpty()) emptyList()
@@ -116,14 +119,14 @@ fun AppScreen(
         }
     }
 
-    var yearDialogOpen by remember { mutableStateOf(false) }
-    var playerSheetOpen by remember { mutableStateOf(false) }
-    var settingsOpen by remember { mutableStateOf(false) }
+    var yearDialogOpen by rememberSaveable { mutableStateOf(false) }
+    var playerSheetOpen by rememberSaveable { mutableStateOf(false) }
+    var settingsOpen by rememberSaveable { mutableStateOf(false) }
     // 音量增强 / 倍速设置层：常驻面板与迷你面板共用同一个开关
-    var tuningOpen by remember { mutableStateOf(false) }
+    var tuningOpen by rememberSaveable { mutableStateOf(false) }
     val toggleTuning: () -> Unit = { tuningOpen = !tuningOpen }
     // 播放面板收起后统一缩到底部的迷你胶囊（横竖屏行为一致）
-    var playerCollapsed by remember { mutableStateOf(false) }
+    var playerCollapsed by rememberSaveable { mutableStateOf(false) }
 
     // 边栏要常驻显示缓存占用，清理后重新统计
     val context = LocalContext.current

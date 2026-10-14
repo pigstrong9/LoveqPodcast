@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -78,7 +79,14 @@ fun SearchPanel(
     onPlay: (Long) -> Unit,
     onClose: () -> Unit
 ) {
-    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+    Dialog(
+        onDismissRequest = onClose,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            // 关掉系统默认的 insets 消费，让 imePadding 能拿到键盘高度避让
+            decorFitsSystemWindows = false
+        )
+    ) {
         Surface(
             shape = RoundedCornerShape(24.dp),
             color = AppColors.Canvas,
@@ -87,6 +95,7 @@ fun SearchPanel(
                 .widthIn(max = 680.dp)
                 .fillMaxWidth()
                 .heightIn(min = 420.dp, max = 700.dp)
+                .imePadding()
         ) {
             Column(Modifier.fillMaxSize()) {
                 SearchField(query = query, onQueryChange = onQueryChange, onClose = onClose)
@@ -196,26 +205,30 @@ private fun HistoryContent(history: List<Progress>, onPlay: (Long) -> Unit) {
             Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
+            // M3 FilterChip 默认 32dp 高，低于车机 44dp 触控下限，统一补高
             FilterChip(
                 selected = filter == 0,
                 onClick = { filter = 0 },
                 label = { Text("全部") },
                 colors = chipColors,
-                shape = RoundedCornerShape(12.dp)
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.heightIn(min = 44.dp)
             )
             FilterChip(
                 selected = filter == 1,
                 onClick = { filter = 1 },
                 label = { Text("在听") },
                 colors = chipColors,
-                shape = RoundedCornerShape(12.dp)
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.heightIn(min = 44.dp)
             )
             FilterChip(
                 selected = filter == 2,
                 onClick = { filter = 2 },
                 label = { Text("听完") },
                 colors = chipColors,
-                shape = RoundedCornerShape(12.dp)
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.heightIn(min = 44.dp)
             )
         }
 

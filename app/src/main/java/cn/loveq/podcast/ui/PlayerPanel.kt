@@ -842,7 +842,7 @@ private fun SkipButton(icon: ImageVector, contentDescription: String, onClick: (
     }
 }
 
-/** 白色细轨道 + 圆点，触控热区 30dp */
+/** 白色细轨道 + 圆点，视觉 6dp、触控热区 44dp */
 @Composable
 private fun Scrubber(
     positionMs: Long,
@@ -1102,6 +1102,8 @@ fun MiniPlayer(
         speed = speed,
         boost = boost,
         onToggle = onToggle,
+        onSeekBack = onSeekBack,
+        onSeekForward = onSeekForward,
         onOpen = onOpen,
         modifier = modifier
     )
@@ -1243,6 +1245,8 @@ private fun MiniBar(
     speed: Float,
     boost: Int,
     onToggle: () -> Unit,
+    onSeekBack: () -> Unit,
+    onSeekForward: () -> Unit,
     onOpen: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -1256,6 +1260,12 @@ private fun MiniBar(
             .padding(horizontal = 14.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        PillIconButton(
+            icon = Icons.Filled.Replay30,
+            contentDescription = "后退 30 秒",
+            onClick = onSeekBack
+        )
+        Spacer(Modifier.width(6.dp))
         Box(
             Modifier
                 .size(58.dp)
@@ -1271,6 +1281,12 @@ private fun MiniBar(
                 modifier = Modifier.size(30.dp)
             )
         }
+        Spacer(Modifier.width(6.dp))
+        PillIconButton(
+            icon = Icons.Filled.Forward30,
+            contentDescription = "前进 30 秒",
+            onClick = onSeekForward
+        )
         Spacer(Modifier.width(14.dp))
         Column(Modifier.weight(1f)) {
             Text(
