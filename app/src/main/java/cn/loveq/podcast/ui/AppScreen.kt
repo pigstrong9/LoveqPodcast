@@ -35,6 +35,8 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -54,10 +56,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import cn.loveq.podcast.data.Category
+import cn.loveq.podcast.data.DownloadManager
 import cn.loveq.podcast.data.Episode
 import cn.loveq.podcast.data.Progress
 import cn.loveq.podcast.playback.MediaCache
@@ -67,6 +71,7 @@ import java.util.Calendar
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.roundToInt
 
 /**
  * 达到这个宽度就用三栏（边栏 + 列表 + 播放面板），否则单栏 + 迷你播放条。
@@ -127,6 +132,49 @@ fun AppScreen(
     val toggleTuning: () -> Unit = { tuningOpen = !tuningOpen }
     // 播放面板收起后统一缩到底部的迷你胶囊（横竖屏行为一致）
     var playerCollapsed by rememberSaveable { mutableStateOf(false) }
+
+    // 长按列表节目进入批量选择，用于把整集离线缓存到本地
+    var selecting by rememberSaveable { mutableStateOf(false) }
+    var selected by remember { mutableStateOf(listOf<Episode>()) }
+    val selectedIds = selected.mapTo(mutableSetOf()) { it.id }
+    val downloads by viewModel.downloads.collectAsStateWithLifecycle()
+    val offlineIds = remember(downloads) {
+        downloads.filter { it.state == DownloadManager.State.DONE }
+            .mapTo(mutableSetOf()) { it.episode.id }
+    }
+    val pendingIds = remember(downloads) {
+        downloads.filter { it.state != DownloadManager.State.DONE }
+            .mapTo(mutableSetOf()) { it.episode.id }
+    }
+    val exitSelect = {
+        selecting = false
+        selected = emptyList()
+    }
+    val enterSelect: (Episode) -> Unit = { e ->
+        selecting = true
+        selected = listOf(e)
+    }
+    val toggleSelect: (Episode) -> Unit = { e ->
+        selected = if (selected.any { it.id == e.id }) {
+            selected.filterNot { it.id == e.id }
+        } else {
+            selected + e
+        }
+    }
+    val offlineSelected = {
+        viewModel.offlineEpisodes(selected)
+        exitSelect()
+    }
+    val selectionArgs = SelectionArgs(
+        selecting = selecting,
+        selectedIds = selectedIds,
+        offlineIds = offlineIds,
+        pendingIds = pendingIds,
+        onEnterSelect = enterSelect,
+        onToggleSelect = toggleSelect,
+        onExitSelect = exitSelect,
+        onOfflineSelected = offlineSelected
+    )
 
     // 边栏要常驻显示缓存占用，清理后重新统计
     val context = LocalContext.current
@@ -198,6 +246,7 @@ fun AppScreen(
                             refresh = viewModel::refresh,
                             retry = viewModel::retry,
                             modifier = Modifier.weight(1f),
+                            selection = selectionArgs,
                             // 收起时迷你胶囊浮在列表上，底部留出它的高度，避免盖住最后一期
                             bottomInset = if (playingMediaId != null && playerCollapsed) MINI_PILL_INSET else 0.dp
                         )
@@ -284,7 +333,8 @@ fun AppScreen(
                         refresh = viewModel::refresh,
                         retry = viewModel::retry,
                         modifier = Modifier.weight(1f),
-                        compact = true
+                        compact = true,
+                        selection = selectionArgs
                     )
                     AnimatedVisibility(
                         visible = playingMediaId != null,
@@ -371,6 +421,8 @@ fun AppScreen(
     if (settingsOpen) {
         CacheDialog(
             cacheBytes = cacheBytes,
+            downloads = downloads,
+            onRemove = viewModel::removeOffline,
             onCleared = { cacheTick++ },
             onDismiss = { settingsOpen = false }
         )
@@ -470,6 +522,8 @@ private fun YearPickerDialog(
 @Composable
 private fun CacheDialog(
     cacheBytes: Long?,
+    downloads: List<DownloadManager.Entry>,
+    onRemove: (Long) -> Unit,
     onCleared: () -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -481,7 +535,7 @@ private fun CacheDialog(
         onDismiss = onDismiss,
         title = "缓存管理",
         text = {
-            Column {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
                 Text(
                     "节目缓存：" + (cacheBytes?.let { formatSize(it) } ?: "统计中…") + " / 2 GB",
                     style = MaterialTheme.typography.titleMedium,
@@ -494,6 +548,56 @@ private fun CacheDialog(
                     style = MaterialTheme.typography.bodySmall,
                     color = AppColors.Muted
                 )
+                if (downloads.isNotEmpty()) {
+                    Spacer(Modifier.height(16.dp))
+                    Text(
+                        "离线缓存 ${downloads.size} 期 · 听完自动删除",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = AppColors.Ink
+                    )
+                    downloads.forEach { entry ->
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(top = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    entry.episode.title.ifBlank { entry.episode.date },
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = AppColors.Ink,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    entry.episode.date,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = AppColors.Muted
+                                )
+                            }
+                            Spacer(Modifier.width(10.dp))
+                            Text(
+                                when (entry.state) {
+                                    DownloadManager.State.DONE -> formatSize(entry.bytes)
+                                    DownloadManager.State.DOWNLOADING ->
+                                        "${(entry.progress * 100).roundToInt()}%"
+                                    DownloadManager.State.QUEUED -> "排队中"
+                                    DownloadManager.State.FAILED -> "失败"
+                                },
+                                style = MaterialTheme.typography.labelMedium,
+                                color = if (entry.state == DownloadManager.State.FAILED) {
+                                    AppColors.RedDeep
+                                } else {
+                                    AppColors.Muted
+                                }
+                            )
+                            TextButton(onClick = { onRemove(entry.episode.id) }) {
+                                Text("删除", color = AppColors.Muted)
+                            }
+                        }
+                    }
+                }
                 if (clearing) {
                     Spacer(Modifier.height(12.dp))
                     CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)

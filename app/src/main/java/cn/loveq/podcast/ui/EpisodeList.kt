@@ -72,6 +72,21 @@ import cn.loveq.podcast.ui.theme.AppColors
 import kotlin.math.roundToInt
 
 private val CardShape = RoundedCornerShape(16.dp)
+
+/**
+ * 批量选择模式的一揽子参数：三栏与窄屏两处列表共用，避免八个参数抄两遍。
+ * offlineIds = 已离线缓存的期，pendingIds = 排队/下载中的期，用于行尾徽标。
+ */
+data class SelectionArgs(
+    val selecting: Boolean = false,
+    val selectedIds: Set<Long> = emptySet(),
+    val offlineIds: Set<Long> = emptySet(),
+    val pendingIds: Set<Long> = emptySet(),
+    val onEnterSelect: (Episode) -> Unit = {},
+    val onToggleSelect: (Episode) -> Unit = {},
+    val onExitSelect: () -> Unit = {},
+    val onOfflineSelected: () -> Unit = {}
+)
 private val ContinueShape = RoundedCornerShape(18.dp)
 private val YearShape = RoundedCornerShape(9.dp)
 
@@ -96,15 +111,12 @@ fun EpisodeListPane(
     /** 底部要避让的浮层高度（迷你胶囊浮在列表上时传入），默认不避让 */
     bottomInset: Dp = 0.dp,
     /** 长按进入的批量选择模式 */
-    selecting: Boolean = false,
-    selectedIds: Set<Long> = emptySet(),
-    offlineIds: Set<Long> = emptySet(),
-    pendingIds: Set<Long> = emptySet(),
-    onEnterSelect: (Episode) -> Unit = {},
-    onToggleSelect: (Long) -> Unit = {},
-    onExitSelect: () -> Unit = {},
-    onOfflineSelected: () -> Unit = {}
+    selection: SelectionArgs = SelectionArgs()
 ) {
+    val (
+        selecting, selectedIds, offlineIds, pendingIds,
+        onEnterSelect, onToggleSelect, onExitSelect, onOfflineSelected
+    ) = selection
     val listState = rememberLazyListState()
     val episodeCount = state.episodes.size
     val startPage = state.startPage
@@ -270,7 +282,7 @@ fun EpisodeListPane(
                                 offline = offlineIds.contains(episode.id),
                                 pending = pendingIds.contains(episode.id),
                                 onClick = {
-                                    if (selecting) onToggleSelect(episode.id) else onPlay(index)
+                                    if (selecting) onToggleSelect(episode) else onPlay(index)
                                 },
                                 onLongClick = { onEnterSelect(episode) }
                             )
@@ -530,6 +542,32 @@ private fun EpisodeRow(
                 }
             }
         }
+        // 离线徽标与进度条共存：正在听的往往正是缓存下来的那期，两者不该互相挤掉
+        if (offline || pending) {
+            Spacer(Modifier.width(12.dp))
+            Box(
+                Modifier
+                    .size(22.dp)
+                    .clip(CircleShape)
+                    .background(if (offline) AppColors.RedMist else AppColors.Canvas),
+                contentAlignment = Alignment.Center
+            ) {
+                if (!offline) {
+                    CircularProgressIndicator(
+                        Modifier.size(14.dp),
+                        strokeWidth = 2.dp,
+                        color = AppColors.Red
+                    )
+                } else {
+                    Icon(
+                        Icons.Filled.CloudDownload,
+                        contentDescription = "已离线缓存",
+                        tint = AppColors.RedDeep,
+                        modifier = Modifier.size(14.dp)
+                    )
+                }
+            }
+        }
         when {
             current -> {
                 Spacer(Modifier.width(14.dp))
@@ -557,33 +595,6 @@ private fun EpisodeRow(
                         tint = AppColors.RedDeep,
                         modifier = Modifier.size(14.dp)
                     )
-                }
-            }
-
-            offline || pending -> {
-                // 已离线缓存 / 正在下载：车机上「哪几期没网也能听」必须一眼可见
-                Spacer(Modifier.width(14.dp))
-                Box(
-                    Modifier
-                        .size(22.dp)
-                        .clip(CircleShape)
-                        .background(if (offline) AppColors.RedMist else AppColors.Canvas),
-                    contentAlignment = Alignment.Center
-                ) {
-                    if (!offline) {
-                        CircularProgressIndicator(
-                            Modifier.size(14.dp),
-                            strokeWidth = 2.dp,
-                            color = AppColors.Red
-                        )
-                    } else {
-                        Icon(
-                            Icons.Filled.CloudDownload,
-                            contentDescription = "已离线缓存",
-                            tint = AppColors.RedDeep,
-                            modifier = Modifier.size(14.dp)
-                        )
-                    }
                 }
             }
 

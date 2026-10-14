@@ -1,6 +1,7 @@
 package cn.loveq.podcast.data
 
 import android.content.Context
+import android.os.StatFs
 import cn.loveq.podcast.playback.PlaybackEvents
 import java.io.File
 import java.io.FileOutputStream
@@ -73,6 +74,17 @@ class DownloadManager(context: Context, private val repository: LoveqRepository)
             _downloads.value.none { it.episode.id == e.id } && localFile(e.id) == null
         }
         if (pending.isEmpty()) return
+        // 一期约 126MB（128kbps 两小时），车机存储不大；空间不够就明确拒绝，
+        // 不能下到一半把设备塞满
+        val need = pending.size * ESTIMATED_BYTES
+        val free = StatFs(dir.absolutePath).availableBytes
+        if (free < need) {
+            PlaybackEvents.tryEmit(
+                "空间不足：缓存 ${pending.size} 期约需 ${need / MB} MB，" +
+                    "当前仅剩 ${free / MB} MB"
+            )
+            return
+        }
         _downloads.value = _downloads.value + pending.map { Entry(it, State.QUEUED, 0, 0) }
         persist()
         pump()
@@ -242,5 +254,9 @@ class DownloadManager(context: Context, private val repository: LoveqRepository)
 
     companion object {
         private const val PROGRESS_STEP = 256L * 1024
+        private const val MB = 1024L * 1024
+
+        /** 一期约两小时、128kbps，估算 126MB，用于下载前的空间预检 */
+        private const val ESTIMATED_BYTES = 130L * MB
     }
 }
