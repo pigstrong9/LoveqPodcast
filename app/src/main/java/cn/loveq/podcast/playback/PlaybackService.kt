@@ -48,12 +48,20 @@ class PlaybackService : MediaSessionService() {
     private val player: Player get() = mediaSession!!.player
 
     private var queue: List<Episode> = emptyList()
-    private var playingEpisode: Episode? = null
+
+    /** 上次进程存活时落盘的连播队列，用于恢复「从搜索/历史点进来」那集的连播上下文 */
+    private var restoredQueue: QueueStore.Snapshot? = null
     private var currentTitle = ""
     private var urlRetries = 0
     private var currentJob: Job? = null
+
+    /** 直链过期后的退避重取，与解析任务分开，避免互相取消 */
+    private var retryJob: Job? = null
     private var lastSavedId: Long? = null
     private var lastSavedPosition = -1L
+
+    /** 内存里最新的位置：直链过期重解析后按它续播，而不是退回上次落盘的旧位置 */
+    private var lastKnownPosition = -1L
     private var pendingLoad = false
 
     /** 正在解析音频地址的队列下标，-1 表示空闲；避免占位地址报错时重复触发解析 */
@@ -105,6 +113,7 @@ class PlaybackService : MediaSessionService() {
                 saveProgress()
             }
         }
+        restoredQueue = app.queueStore.load()
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession
@@ -178,15 +187,29 @@ class PlaybackService : MediaSessionService() {
 
     private fun playQueue(items: List<Episode>, startIndex: Int) {
         if (items.isEmpty()) return
-        queue = items
+        // 从搜索/历史点进来的那一集，ViewModel 那边可能只有它自己（不在当前列表、
+        // 也不在全库索引覆盖的分类里）。若它在上次落盘的队列里，就沿用原队列，
+        // 连播上下文不至于丢掉。
+        var resolved = items
+        var start = startIndex
+        if (items.size == 1) {
+            val snapshot = restoredQueue
+            val at = snapshot?.episodes?.indexOfFirst { it.id == items[0].id } ?: -1
+            if (snapshot != null && at >= 0) {
+                resolved = snapshot.episodes
+                start = at
+            }
+        }
+        queue = resolved
         urlRetries = 0
+        app.queueStore.save(resolved, start)
         // 一次性把整条队列交给播放器：通知栏因此知道「有下一期」，才会显示切集按钮。
         // 音频地址（带签名、有时效）先留空，播放到某一期时再解析并替换进去。
         pendingLoad = true
-        if (startIndex > 0) player.seekToDefaultPosition(startIndex)
-        player.setMediaItems(items.map { lazyItem(it) }, startIndex, 0L)
+        if (start > 0) player.seekToDefaultPosition(start)
+        player.setMediaItems(resolved.map { lazyItem(it) }, start, 0L)
         // 起始条目的真实地址由 resolveAndPlay 解析并替换，这里不 prepare 占位条目
-        resolveAndPlay(startIndex)
+        resolveAndPlay(start)
     }
 
     /**
@@ -210,13 +233,21 @@ class PlaybackService : MediaSessionService() {
             .setArtworkUri(artworkUri)
             .build()
 
-    /** 解析某一期的音频地址并立即播放；地址过期重试也走这里 */
-    private fun resolveAndPlay(index: Int) {
+    /**
+     * 解析某一期的音频地址并立即播放；地址过期重试也走这里。
+     *
+     * 注意这里**不能**重置 urlRetries：重试路径正是本函数，一清零计数就永远到不了上限，
+     * 持续 405 会变成无退避的死循环抓站。计数只在真正换期或播放恢复正常时清。
+     */
+    private fun resolveAndPlay(
+        index: Int,
+        autoplay: Boolean = true,
+        resumePositionMs: Long = -1L
+    ) {
         val episode = queue.getOrNull(index) ?: return
         if (resolvingIndex == index) return
         resolvingIndex = index
         pendingLoad = true
-        urlRetries = 0
         currentJob?.cancel()
         currentJob = scope.launch {
             try {
@@ -236,8 +267,10 @@ class PlaybackService : MediaSessionService() {
                 MediaCache.setActiveKey(item.localConfiguration?.uri)
                 player.replaceMediaItem(index, item)
                 player.prepare()
-                startAtSavedPosition(episode)
-                player.play()
+                // 重解析用内存里的最新位置续上；首次点播才回落到上次落盘的进度
+                if (resumePositionMs > 0) player.seekTo(resumePositionMs)
+                else startAtSavedPosition(episode)
+                if (autoplay) player.play()
                 pendingLoad = false
             } catch (e: CancellationException) {
                 // 只有仍归自己时才清标记：被新任务取消的旧任务若无条件清掉，
@@ -267,24 +300,43 @@ class PlaybackService : MediaSessionService() {
     private fun resumeCurrentWithFreshUrl() {
         // 地址过期要重新解析，先清掉「正在解析」标记
         resolvingIndex = -1
-        resolveAndPlay(player.currentMediaItemIndex)
+        // playWhenReady 才代表用户的播放意图：出错时 isPlaying 已经是 false，
+        // 用它判断会把「用户主动暂停」也误恢复成播放
+        val wantedPlaying = player.playWhenReady
+        resolveAndPlay(
+            index = player.currentMediaItemIndex,
+            autoplay = wantedPlaying,
+            resumePositionMs = lastKnownPosition
+        )
     }
+
+    /** 按 mediaId 反查条目：队列 → 全库索引 → 已存进度。任一命中就能继续记进度 */
+    private fun episodeOf(id: Long): Episode? =
+        queue.firstOrNull { it.id == id }
+            ?: app.indexStore.episodes.value.firstOrNull { it.id == id }
+            ?: app.progressStore.get(id)?.let { Episode(id, it.date, it.title) }
 
     private fun saveProgress() {
         val player = mediaSession?.player ?: return
-        val id = player.currentMediaItem?.mediaId?.toLongOrNull() ?: return
-        val episode = playingEpisode?.takeIf { it.id == id } ?: return
+        val item = player.currentMediaItem ?: return
+        val id = item.mediaId.toLongOrNull() ?: return
+        // 原先依赖 playingEpisode，而它只在 onMediaItemTransition 里赋值；
+        // 队列没对上（进程重启、外部切集）时这里会静默 return，进度从此不再落盘
+        val episode = episodeOf(id) ?: return
         val duration = player.duration
         val position = player.currentPosition
         if (duration <= 0 || position <= 0) return
         if (id == lastSavedId && position == lastSavedPosition) return
         lastSavedId = id
         lastSavedPosition = position
+        lastKnownPosition = position
+        val title = item.mediaMetadata.title?.toString()?.takeIf { it.isNotBlank() }
+            ?: episode.title.ifBlank { episode.date }
         app.progressStore.save(
             id = id,
             positionMs = position,
             durationMs = duration,
-            title = currentTitle,
+            title = title,
             date = episode.date
         )
     }
@@ -297,21 +349,26 @@ class PlaybackService : MediaSessionService() {
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             val index = player.currentMediaItemIndex
             val episode = queue.getOrNull(index) ?: return
-            playingEpisode = episode
             currentTitle = mediaItem?.mediaMetadata?.title?.toString() ?: episode.title
+            app.queueStore.save(queue, index)
             if (mediaItem?.localConfiguration?.uri?.toString() == PLACEHOLDER_URI &&
                 resolvingIndex != index
             ) {
                 resolveAndPlay(index)
-            } else {
-                urlRetries = 0
             }
+            // 重试计数不在这里清零：重解析成功后 replaceMediaItem 也会回调到这里，
+            // 在那儿清零等于没设上限。真正恢复出声（STATE_READY）或用户重新点播才归零
         }
 
         override fun onPlaybackStateChanged(playbackState: Int) {
+            if (playbackState == Player.STATE_READY) {
+                // 能正常出声音说明直链有效，重试计数归零
+                urlRetries = 0
+                return
+            }
             if (playbackState == Player.STATE_ENDED) {
                 val endedId = player.currentMediaItem?.mediaId?.toLongOrNull()
-                val ended = playingEpisode?.takeIf { it.id == endedId }
+                val ended = endedId?.let { episodeOf(it) }
                 if (ended != null) {
                     app.progressStore.markDone(ended.id, currentTitle, ended.date)
                 }
@@ -331,7 +388,12 @@ class PlaybackService : MediaSessionService() {
             val httpError = error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS
             if (httpError && urlRetries < MAX_URL_RETRIES) {
                 urlRetries++
-                resumeCurrentWithFreshUrl()
+                // 退避后再重取直链：连续 405 时不要立刻再抓一遍站
+                retryJob?.cancel()
+                retryJob = scope.launch {
+                    delay(URL_RETRY_BACKOFF_MS * urlRetries)
+                    resumeCurrentWithFreshUrl()
+                }
             } else {
                 PlaybackEvents.tryEmit("播放出错：${error.errorCodeName}")
             }
@@ -355,6 +417,7 @@ class PlaybackService : MediaSessionService() {
 
     override fun onDestroy() {
         saveProgress()
+        retryJob?.cancel()
         scope.cancel()
         mediaSession?.run {
             player.release()
@@ -379,6 +442,7 @@ class PlaybackService : MediaSessionService() {
         private const val SAVE_INTERVAL_MS = 5_000L
         private const val RESUME_EPSILON_MS = 30_000L
         private const val MAX_URL_RETRIES = 2
+        private const val URL_RETRY_BACKOFF_MS = 2_000L
     }
 
     /** 通知栏/锁屏的专辑图：直接用应用内的主持人封面 */

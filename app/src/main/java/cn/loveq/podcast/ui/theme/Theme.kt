@@ -19,7 +19,7 @@ object AppColors {
     val Card = Color(0xFFFFFFFF)
     val Ink = Color(0xFF241E28)
     val Body = Color(0xFF4A4350)
-    val Muted = Color(0xFF8B8394)
+    val Muted = Color(0xFF6A6174)
     val Faint = Color(0xFF9A95A0)
 
     val Red = Color(0xFFE50012)

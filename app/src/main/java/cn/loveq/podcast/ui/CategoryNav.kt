@@ -46,6 +46,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -190,9 +191,13 @@ private fun NavItem(
         Spacer(Modifier.width(12.dp))
         Text(
             label,
-            maxLines = 1,
+            // 长分类名（Hugo's Story Time）在 196–252dp 边栏里一行放不下：
+            // 两行换行比硬裁剪/词中省略更可读，纵向空间分类列足够
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
             style = MaterialTheme.typography.bodyLarge.copy(
-                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                lineHeight = 21.sp
             ),
             color = content
         )
@@ -293,7 +298,8 @@ fun CategoryPills(
                     .clip(RoundedCornerShape(13.dp))
                     .background(background)
                     .clickable { onSelect(category) }
-                    .padding(horizontal = 16.dp, vertical = 10.dp)
+                    // 胶囊视觉 44dp：车机触控热区下限
+                    .padding(horizontal = 16.dp, vertical = 12.dp)
             )
         }
     }

@@ -40,6 +40,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Forward30
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Replay30
@@ -368,6 +369,7 @@ private val CARD_CORNER = 28.dp
 /**
  * 顶部小横条：整条顶部区域（≥44dp 高）都可点，点一下即收起。
  * 这是全屏面板唯一的收起入口，刻意不叠任何拖拽识别器。
+ * 光秃一条 4dp 横线在常驻面板上没有「收起」暗示，补一枚向下的 chevron。
  */
 @Composable
 private fun SheetHandle(onCollapse: () -> Unit) {
@@ -378,12 +380,21 @@ private fun SheetHandle(onCollapse: () -> Unit) {
             .clickable(onClick = onCollapse),
         contentAlignment = Alignment.Center
     ) {
-        Box(
-            Modifier
-                .size(width = 44.dp, height = 4.dp)
-                .clip(CircleShape)
-                .background(Color.White.copy(alpha = 0.38f))
-        )
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Icon(
+                Icons.Filled.KeyboardArrowDown,
+                contentDescription = "收起",
+                tint = Color.White.copy(alpha = 0.6f),
+                modifier = Modifier.size(16.dp)
+            )
+            Spacer(Modifier.height(2.dp))
+            Box(
+                Modifier
+                    .size(width = 44.dp, height = 4.dp)
+                    .clip(CircleShape)
+                    .background(Color.White.copy(alpha = 0.38f))
+            )
+        }
     }
 }
 
@@ -860,7 +871,8 @@ private fun Scrubber(
         BoxWithConstraints(
             Modifier
                 .fillMaxWidth()
-                .height(30.dp)
+                // 视觉仍是 6dp 细轨，热区扩到 44dp 触控下限（车机/颠簸环境好按）
+                .heightIn(min = 44.dp)
                 .then(
                     if (enabled) {
                         Modifier.pointerInput(durationMs) {
@@ -985,7 +997,7 @@ private fun TuningFooter(
     }
 }
 
-/** 与进度条同风格的横向滑杆，触控热区 30dp，点击即定位 */
+/** 与进度条同风格的横向滑杆，视觉 6dp、热区 44dp，点击即定位 */
 @Composable
 private fun FlatSlider(
     value: Float,
@@ -995,7 +1007,7 @@ private fun FlatSlider(
     BoxWithConstraints(
         modifier
             .fillMaxWidth()
-            .height(30.dp)
+            .heightIn(min = 44.dp)
             .pointerInput(Unit) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)

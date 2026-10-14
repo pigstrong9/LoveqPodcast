@@ -292,7 +292,7 @@ private fun ContinueCard(
             Text(
                 "继续收听",
                 style = MaterialTheme.typography.labelSmall,
-                color = Color.White.copy(alpha = 0.85f),
+                color = Color.White.copy(alpha = 0.95f),
                 letterSpacing = 1.5.sp
             )
             Spacer(Modifier.height(3.dp))
@@ -314,7 +314,7 @@ private fun ContinueCard(
                         }
                     },
                     style = MaterialTheme.typography.bodySmall,
-                    color = Color.White.copy(alpha = 0.85f)
+                    color = Color.White.copy(alpha = 0.95f)
                 )
             }
             Spacer(Modifier.height(8.dp))
@@ -351,7 +351,7 @@ private fun YearPill(year: Int) {
             color = AppColors.RedDeep
         ),
         modifier = Modifier
-            .padding(start = 10.dp, top = 8.dp, bottom = 6.dp)
+            .padding(top = 8.dp, bottom = 6.dp)
             .clip(YearShape)
             .background(AppColors.RedMist)
             .padding(horizontal = 12.dp, vertical = 3.dp)
@@ -370,7 +370,7 @@ private fun EpisodeRow(
     val done = progress?.done == true && !current
     val fraction = progress?.takeIf { it.durationMs > 0 }
         ?.let { (it.positionMs.toFloat() / it.durationMs).coerceIn(0f, 1f) } ?: 0f
-    val showRail = !current && !done && fraction > 0.02f && fraction < 0.98f
+    val showRail = !done && fraction > 0.02f && fraction < 0.98f
 
     val container by animateColorAsState(
         targetValue = if (current) AppColors.RedWash else AppColors.Card,
@@ -422,6 +422,25 @@ private fun EpisodeRow(
                     style = MaterialTheme.typography.labelMedium,
                     color = AppColors.Muted
                 )
+            }
+            // 播放中的行：进度条挪到文字下方通栏显示（右侧让位给跳动条），
+            // 否则迷你胶囊收起后在列表里找不到本期听到哪
+            if (current && showRail) {
+                Spacer(Modifier.height(5.dp))
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(5.dp)
+                        .clip(RoundedCornerShape(3.dp))
+                        .background(AppColors.Rail)
+                ) {
+                    Box(
+                        Modifier
+                            .fillMaxWidth(railFraction)
+                            .fillMaxHeight()
+                            .background(AppColors.Red)
+                    )
+                }
             }
         }
         when {
