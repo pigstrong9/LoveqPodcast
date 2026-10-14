@@ -10,6 +10,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -128,6 +130,8 @@ class DownloadManager(context: Context, private val repository: LoveqRepository)
                         val buf = ByteArray(64 * 1024)
                         var written = 0L
                         while (true) {
+                            // 阻塞式读流不会自己响应取消，每块主动检查一次
+                            currentCoroutineContext().ensureActive()
                             val n = input.read(buf)
                             if (n < 0) break
                             out.write(buf, 0, n)
