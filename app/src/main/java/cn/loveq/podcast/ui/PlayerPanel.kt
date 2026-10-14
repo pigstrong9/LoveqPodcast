@@ -40,7 +40,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Forward30
-import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Replay30
@@ -380,21 +379,12 @@ private fun SheetHandle(onCollapse: () -> Unit) {
             .clickable(onClick = onCollapse),
         contentAlignment = Alignment.Center
     ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Icon(
-                Icons.Filled.KeyboardArrowDown,
-                contentDescription = "收起",
-                tint = Color.White.copy(alpha = 0.6f),
-                modifier = Modifier.size(16.dp)
-            )
-            Spacer(Modifier.height(2.dp))
-            Box(
-                Modifier
-                    .size(width = 44.dp, height = 4.dp)
-                    .clip(CircleShape)
-                    .background(Color.White.copy(alpha = 0.38f))
-            )
-        }
+        Box(
+            Modifier
+                .size(width = 44.dp, height = 4.dp)
+                .clip(CircleShape)
+                .background(Color.White.copy(alpha = 0.38f))
+        )
     }
 }
 
