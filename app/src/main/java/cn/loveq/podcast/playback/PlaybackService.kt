@@ -3,6 +3,8 @@ package cn.loveq.podcast.playback
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.Network
 import android.net.Uri
 import android.os.Bundle
 import android.view.KeyEvent
@@ -55,7 +57,9 @@ class PlaybackService : MediaSessionService() {
     private var restoredQueue: QueueStore.Snapshot? = null
     private var currentTitle = ""
     private var urlRetries = 0
-    private var networkRetries = 0
+
+    /** 断网时挂的网络回调，恢复或销毁时必须注销 */
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var currentJob: Job? = null
 
     /** 直链过期后的退避重取，与解析任务分开，避免互相取消 */
@@ -306,6 +310,30 @@ class PlaybackService : MediaSessionService() {
         if (startPos > 0) player.seekTo(startPos)
     }
 
+    /** 断网时挂起等待：网络一恢复就重新解析直链、从内存最新位置续播 */
+    private fun waitForNetworkAndResume() {
+        if (networkCallback != null) return
+        PlaybackEvents.report("网络中断，恢复后会自动继续播放")
+        val manager = getSystemService(ConnectivityManager::class.java)
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                scope.launch {
+                    stopNetworkWatch()
+                    resumeCurrentWithFreshUrl()
+                }
+            }
+        }
+        networkCallback = callback
+        runCatching { manager.registerDefaultNetworkCallback(callback) }
+            .onFailure { stopNetworkWatch() }
+    }
+
+    private fun stopNetworkWatch() {
+        val callback = networkCallback ?: return
+        networkCallback = null
+        runCatching { getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(callback) }
+    }
+
     /** 退避一段时间后重新解析并续播（直链过期、网络抖动共用） */
     private fun scheduleResume(delayMs: Long, notice: String?) {
         if (notice != null) PlaybackEvents.report(notice)
@@ -383,7 +411,7 @@ class PlaybackService : MediaSessionService() {
             if (playbackState == Player.STATE_READY) {
                 // 能正常出声音说明直链和网络都恢复了，两类重试计数归零
                 urlRetries = 0
-                networkRetries = 0
+                stopNetworkWatch()
                 return
             }
             if (playbackState == Player.STATE_ENDED) {
@@ -415,15 +443,11 @@ class PlaybackService : MediaSessionService() {
                     // 退避后再重取直链：连续 405 时不要立刻再抓一遍站
                     scheduleResume(URL_RETRY_BACKOFF_MS * urlRetries, null)
                 }
-                // 行车途中最常见的是信号抖动/短暂断网，静默停在错误态最烦人
-                code in NETWORK_ERRORS && player.playWhenReady &&
-                    networkRetries < MAX_NETWORK_RESUMES -> {
-                    networkRetries++
-                    scheduleResume(
-                        NETWORK_RESUME_BACKOFF_MS * networkRetries,
-                        "网络中断，正在重试（$networkRetries/$MAX_NETWORK_RESUMES）"
-                    )
-                }
+                // 行车途中最常见的是隧道/地库这类几十秒到几分钟的断网。
+                // 固定次数的退避重试会在网络回来之前就耗尽，之后永远停在错误态，
+                // 所以这里挂网络回调，恢复即续播
+                code in NETWORK_ERRORS && player.playWhenReady ->
+                    waitForNetworkAndResume()
                 else -> PlaybackEvents.report("播放出错：${error.errorCodeName}")
             }
         }
@@ -447,6 +471,7 @@ class PlaybackService : MediaSessionService() {
     override fun onDestroy() {
         saveProgress()
         retryJob?.cancel()
+        stopNetworkWatch()
         scope.cancel()
         mediaSession?.run {
             player.release()
@@ -478,8 +503,6 @@ class PlaybackService : MediaSessionService() {
             PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
             PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT
         )
-        private const val MAX_NETWORK_RESUMES = 4
-        private const val NETWORK_RESUME_BACKOFF_MS = 5_000L
     }
 
     /** 通知栏/锁屏的专辑图：直接用应用内的主持人封面 */
