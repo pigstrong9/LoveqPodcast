@@ -29,6 +29,12 @@ data class Episode(
     val title: String
 ) {
     val year: Int get() = date.substringBefore('.').toIntOrNull() ?: 0
+
+    /** 日期形如 2026.10.12；缺月份时给 0，比较时自然排到最旧一侧 */
+    val month: Int get() = date.split('.').getOrNull(1)?.toIntOrNull() ?: 0
+
+    /** 年*100+月：同月内的排序与筛选键（列表整体是新→旧排布） */
+    val yearMonth: Int get() = year * 100 + month
 }
 
 data class PageResult(
