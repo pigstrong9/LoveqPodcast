@@ -119,7 +119,13 @@ private const val COVER_FILL = 0.96f
  */
 private const val LANDSCAPE_SPLIT_RATIO = 1.5f
 
-/** 宽屏右侧常驻播放面板（仅在有节目播放且未收起时挂载） */
+/**
+ * 宽屏右侧常驻播放面板（仅在有节目播放且未收起时挂载）
+ *
+ * 与侧栏/列表不同，这里让出整个状态栏高度（连底色一起）：
+ * 状态栏图标颜色是整个窗口共用的，深色面板底下那半截深色图标会看不见，
+ * 所以深色块不往状态栏底下画。隐藏状态栏时 inset 为 0，车机仍是通栏到顶。
+ */
 @Composable
 fun PlayerSidePane(
     title: String,
@@ -138,10 +144,15 @@ fun PlayerSidePane(
     tuningVisible: Boolean,
     onRequestTuning: () -> Unit,
     onCollapse: () -> Unit,
+    topInset: WindowInsets = WindowInsets(0.dp, 0.dp, 0.dp, 0.dp),
     modifier: Modifier = Modifier
 ) {
     Column(
         modifier
+            // windowInsetsPadding 必须在 fillMaxHeight 之前：反过来写的话
+            // fillMaxHeight 会按整栏高度定死，内层只剩「栏高 − 状态栏高」，
+            // 底部空出一条状态栏高度的画布色死区，收起手柄也会被挤下去、顶部点不动。
+            .windowInsetsPadding(topInset)
             .fillMaxHeight()
             .background(AppColors.Player)
     ) {
@@ -193,9 +204,11 @@ fun PlayerSheet(
     onBoost: (Int) -> Unit,
     tuningVisible: Boolean,
     onRequestTuning: () -> Unit,
-    onClose: () -> Unit
+    onClose: () -> Unit,
+    /** 状态栏避让量：见 FullScreenPlayerDialog。隐藏状态栏时为 0，车机行为不变 */
+    topInset: WindowInsets = WindowInsets(0.dp, 0.dp, 0.dp, 0.dp)
 ) {
-    FullScreenPlayerDialog(onClose = onClose) {
+    FullScreenPlayerDialog(onClose = onClose, topInset = topInset) {
         BoxWithConstraints {
             // 只有真正「宽扁」的窗口才值得左右分栏；车机分屏拿到的窗口接近方形，
             // 分栏会让封面按高度撑大、把控件挤到边上，不如回到上下堆叠并水平居中。
@@ -328,9 +341,17 @@ private fun LandscapePlayerContent(
 /**
  * 全屏播放面板的宿主：全屏 Dialog + 顶部小横条。
  * 面板本身不参与任何手势识别，所以拖进度条、拖任何控件都不会误触收起。
+ *
+ * topInset 排在 clip/background 之前：状态栏图标是全窗口共用的深色，深色卡片要是
+ * 画到状态栏底下，那半截图标就看不见。让卡片整体从状态栏下方起画，底下露出的还是
+ * 浅色列表背景，图标才有对比度。隐藏状态栏时 topInset 为 0，车机行为不变。
  */
 @Composable
-private fun FullScreenPlayerDialog(onClose: () -> Unit, panel: @Composable () -> Unit) {
+private fun FullScreenPlayerDialog(
+    onClose: () -> Unit,
+    topInset: WindowInsets,
+    panel: @Composable () -> Unit
+) {
     Dialog(
         onDismissRequest = onClose,
         properties = DialogProperties(usePlatformDefaultWidth = false)
@@ -338,6 +359,7 @@ private fun FullScreenPlayerDialog(onClose: () -> Unit, panel: @Composable () ->
         Box(
             Modifier
                 .fillMaxSize()
+                .windowInsetsPadding(topInset)
                 .padding(top = CARD_TOP_MARGIN)
                 .clip(
                     RoundedCornerShape(
@@ -1092,8 +1114,6 @@ fun MiniPlayer(
         speed = speed,
         boost = boost,
         onToggle = onToggle,
-        onSeekBack = onSeekBack,
-        onSeekForward = onSeekForward,
         onOpen = onOpen,
         modifier = modifier
     )
@@ -1225,7 +1245,13 @@ private fun TuningBadges(speed: Float, boost: Int) {
     )
 }
 
-/** 窄屏底部通栏迷你条 */
+/**
+ * 窄屏底部通栏迷你条：只在竖屏出现（横屏走居中的 MiniPill）。
+ *
+ * 这里刻意不放快退/快进：竖屏一条通栏要塞下封面、标题、进度、倍速角标，
+ * 再加两颗圆钮就挤得标题只剩几个字。快进快退仍然在展开的播放面板、
+ * 通知栏和车机方向盘按键上，竖屏列表页不需要常驻。
+ */
 @Composable
 private fun MiniBar(
     title: String,
@@ -1235,8 +1261,6 @@ private fun MiniBar(
     speed: Float,
     boost: Int,
     onToggle: () -> Unit,
-    onSeekBack: () -> Unit,
-    onSeekForward: () -> Unit,
     onOpen: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -1250,12 +1274,6 @@ private fun MiniBar(
             .padding(horizontal = 14.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        PillIconButton(
-            icon = Icons.Filled.Replay30,
-            contentDescription = "后退 30 秒",
-            onClick = onSeekBack
-        )
-        Spacer(Modifier.width(6.dp))
         Box(
             Modifier
                 .size(58.dp)
@@ -1271,12 +1289,6 @@ private fun MiniBar(
                 modifier = Modifier.size(30.dp)
             )
         }
-        Spacer(Modifier.width(6.dp))
-        PillIconButton(
-            icon = Icons.Filled.Forward30,
-            contentDescription = "前进 30 秒",
-            onClick = onSeekForward
-        )
         Spacer(Modifier.width(14.dp))
         Column(Modifier.weight(1f)) {
             Text(

@@ -10,14 +10,19 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
@@ -91,6 +96,10 @@ fun SearchPanel(
             shape = RoundedCornerShape(24.dp),
             color = AppColors.Canvas,
             modifier = Modifier
+                // 上面把 decorFitsSystemWindows 关掉了，弹窗自己又不避让状态栏：
+                // 不显示状态栏时没事，一旦用户在设置里关掉沉浸式，
+                // 搜索框（还会自动聚焦）就压在时间和通知图标底下。
+                .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Vertical))
                 .padding(horizontal = 24.dp)
                 .widthIn(max = 680.dp)
                 .fillMaxWidth()

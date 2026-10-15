@@ -5,23 +5,27 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Coffee
 import androidx.compose.material.icons.filled.DirectionsCar
@@ -29,13 +33,14 @@ import androidx.compose.material.icons.automirrored.filled.FormatListBulleted
 import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
-import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -91,15 +96,17 @@ fun Sidebar(
     selected: Category,
     onSelect: (Category) -> Unit,
     onSearch: () -> Unit,
-    onYear: () -> Unit,
     onCache: () -> Unit,
     cacheLabel: String?,
+    topInset: WindowInsets,
     modifier: Modifier = Modifier
 ) {
     Column(
         modifier
             .fillMaxHeight()
+            // 底色先画、再避让状态栏：色块顶到屏幕最上沿，状态栏底下不会露出一条画布色
             .background(MaterialTheme.colorScheme.surfaceVariant)
+            .windowInsetsPadding(topInset)
             .padding(horizontal = 14.dp, vertical = 20.dp)
     ) {
         Row(
@@ -140,8 +147,10 @@ fun Sidebar(
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             SideTool(Icons.Filled.Search, "搜索", onSearch)
-            SideTool(Icons.Filled.CalendarMonth, "年份", onYear)
-            SideTool(Icons.Filled.Storage, "缓存", onCache)
+            // 年份入口挪进了列表（点年份数字），侧栏不再常驻一个「年份」按钮
+            // 页面里除了缓存还有显示设置，入口叫「设置」；
+            // 占用容量下面那行 cacheLabel 常驻，缓存信息并没有因此变难找
+            SideTool(Icons.Filled.Settings, "设置", onCache)
         }
         Text(
             cacheLabel ?: "缓存统计中…",
@@ -242,13 +251,15 @@ private fun SideTool(
 @Composable
 fun PhoneHeader(
     onSearch: () -> Unit,
-    onYear: () -> Unit,
     onCache: () -> Unit,
+    topInset: WindowInsets,
     modifier: Modifier = Modifier
 ) {
     Row(
         modifier
             .fillMaxWidth()
+            // 状态栏区域留给品牌行自己避让：背景是画布色，画到状态栏底下才不断层
+            .windowInsetsPadding(topInset)
             .padding(start = 16.dp, end = 12.dp, top = 12.dp, bottom = 4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -256,26 +267,37 @@ fun PhoneHeader(
         Spacer(Modifier.width(10.dp))
         BrandTitle("FM97.4 珠江经济台", Modifier.weight(1f))
         IconTool(Icons.Filled.Search, "搜索", onSearch)
-        IconTool(Icons.Filled.CalendarMonth, "按年份跳转", onYear)
-        IconTool(Icons.Filled.Storage, "缓存管理", onCache)
+        // 年份入口挪进了列表本体（点年份数字），顶栏不再常驻一个日历按钮
+        IconTool(Icons.Filled.Settings, "设置", onCache)
     }
 }
 
-/** 窄屏分类胶囊横排 */
+/**
+ * 窄屏分类胶囊横排。
+ * 用 LazyRow 而不是 Row：左右滑动列表换分类时，目标分类的胶囊可能在屏幕外，
+ * 需要按 index 把它滚进视野，Row 拿不到 item 位置。
+ */
 @Composable
 fun CategoryPills(
     selected: Category,
     onSelect: (Category) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Row(
-        modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp, vertical = 6.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    val scroll = rememberLazyListState()
+    LaunchedEffect(selected.id) {
+        val index = Category.ALL.indexOfFirst { it.id == selected.id }
+        if (index < 0) return@LaunchedEffect
+        // 已经在视野里就别动，否则每次点选都会把整排胶囊弹一下
+        val visible = scroll.layoutInfo.visibleItemsInfo.any { it.index == index }
+        if (!visible) scroll.animateScrollToItem(index)
+    }
+    LazyRow(
+        state = scroll,
+        modifier = modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp)
     ) {
-        Category.ALL.forEach { category ->
+        items(Category.ALL, key = { it.id }) { category ->
             val current = category.id == selected.id
             val background by animateColorAsState(
                 targetValue = if (current) AppColors.Red else MaterialTheme.colorScheme.surfaceVariant,

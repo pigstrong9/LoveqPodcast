@@ -16,30 +16,38 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -54,6 +62,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -109,6 +118,7 @@ fun AppScreen(
     val indexing by viewModel.indexing.collectAsStateWithLifecycle()
     val metaTitle by viewModel.nowTitle.collectAsStateWithLifecycle()
     val metaDate by viewModel.nowDate.collectAsStateWithLifecycle()
+    val immersive by viewModel.immersive.collectAsStateWithLifecycle()
 
     val lastProgress = lastId?.let { progressMap[it] }
 
@@ -124,7 +134,8 @@ fun AppScreen(
         }
     }
 
-    var yearDialogOpen by rememberSaveable { mutableStateOf(false) }
+    /** 日期筛选弹窗：>0 表示从列表里哪个年份胶囊点开，0 = 用当前年兜底 */
+    var dateDialogYear by rememberSaveable { mutableIntStateOf(0) }
     var playerSheetOpen by rememberSaveable { mutableStateOf(false) }
     var settingsOpen by rememberSaveable { mutableStateOf(false) }
     // 音量增强 / 倍速设置层：常驻面板与迷你面板共用同一个开关
@@ -201,6 +212,16 @@ fun AppScreen(
     val archiveCount = if (state.category.id == Category.CANTONESE_ID) index.size else 0
     val nowSub = listOf(state.category.name, nowDate).filter { it.isNotBlank() }.joinToString(" · ")
 
+    /**
+     * 状态栏要不要让出来。
+     *
+     * 关键：让位置的时候不能整根 Box 一起 pad —— 那样侧栏的浅紫色、播放面板的深色
+     * 都会从状态栏底下断一刀，看起来像贴了一条默认白条（就是「顶栏分层」的成因）。
+     * 改成每个色块自己画到屏幕最上沿、只把自己的内容挪下来，才是系统自适应的样子。
+     * 隐藏状态栏时 inset 为 0，车机仍是整屏无刘海的原样。
+     */
+    val topInset = if (immersive) WindowInsets(0.dp, 0.dp, 0.dp, 0.dp) else WindowInsets.statusBars
+
     BoxWithConstraints {
         // 三栏要求「够宽」且「够扁」：
         // 车机分屏后的半幅窗口虽然可能宽度过线，但接近方形，
@@ -214,8 +235,10 @@ fun AppScreen(
             Modifier
                 .fillMaxSize()
                 .background(MaterialTheme.colorScheme.background)
-                // 状态栏是主动隐藏的，但 DiLink 仍会上报非零的 statusBars inset，
-                // 跟着 pad 就会在顶部留一条浅色空白，所以只避让导航栏/手势条
+                // 这里只避让导航栏/手势条。状态栏由各色块自己避让（见 topInset）：
+                // 在根上 pad 会让侧栏和播放面板从状态栏底下断开，看着像贴了条白条。
+                // 另外 DiLink 明明把状态栏藏了却仍上报非零 statusBars inset，
+                // 跟着 pad 会在顶部多一条浅色空白
                 .windowInsetsPadding(WindowInsets.navigationBars)
         ) {
             if (wide) {
@@ -226,9 +249,9 @@ fun AppScreen(
                             selected = state.category,
                             onSelect = viewModel::switchCategory,
                             onSearch = { searchOpen = true },
-                            onYear = { yearDialogOpen = true },
                             onCache = { settingsOpen = true },
                             cacheLabel = cacheBytes?.let { "缓存 ${formatSize(it)} · 上限 2 GB" },
+                            topInset = topInset,
                             modifier = Modifier.width(sidebarWidth)
                         )
                         EpisodeListPane(
@@ -245,6 +268,9 @@ fun AppScreen(
                             loadPrevious = viewModel::loadPreviousPage,
                             refresh = viewModel::refresh,
                             retry = viewModel::retry,
+                            onPickDate = { dateDialogYear = it },
+                            onClearDateFilter = viewModel::clearDateFilter,
+                            topInset = topInset,
                             modifier = Modifier.weight(1f),
                             selection = selectionArgs,
                             // 收起时迷你胶囊浮在列表上，底部留出它的高度，避免盖住最后一期
@@ -279,6 +305,7 @@ fun AppScreen(
                                     tuningOpen = false
                                     playerCollapsed = true
                                 },
+                                topInset = topInset,
                                 modifier = Modifier.fillMaxHeight().width(playerWidth)
                             )
                         }
@@ -311,8 +338,8 @@ fun AppScreen(
                 Column(Modifier.fillMaxSize()) {
                     PhoneHeader(
                         onSearch = { searchOpen = true },
-                        onYear = { yearDialogOpen = true },
-                        onCache = { settingsOpen = true }
+                        onCache = { settingsOpen = true },
+                        topInset = topInset
                     )
                     CategoryPills(
                         selected = state.category,
@@ -332,8 +359,22 @@ fun AppScreen(
                         loadPrevious = viewModel::loadPreviousPage,
                         refresh = viewModel::refresh,
                         retry = viewModel::retry,
+                        onPickDate = { dateDialogYear = it },
+                        onClearDateFilter = viewModel::clearDateFilter,
+                        // 这里不能再传 topInset：竖屏是 PhoneHeader→胶囊→列表 纵向堆叠，
+                        // PhoneHeader 已经避让过状态栏，而 windowInsetsPadding 只在自己的
+                        // 子树里消费 inset、不会替后面的兄弟节点消费，再 pad 一次
+                        // 就在胶囊和标题之间凭空多出一条状态栏高度的空白
                         modifier = Modifier.weight(1f),
                         compact = true,
+                        // 没有侧栏可用，左右滑列表就是换分类的手势；
+                        // 三栏有侧栏常驻，再让列表可滑只会误触
+                        onSwipeCategory = { delta -> viewModel.switchCategoryBy(delta) },
+                        swipeHint = { delta ->
+                            val all = Category.ALL
+                            val i = all.indexOfFirst { it.id == state.category.id }
+                            all.getOrNull(i + delta)?.name
+                        },
                         selection = selectionArgs
                     )
                     AnimatedVisibility(
@@ -384,19 +425,20 @@ fun AppScreen(
                 onClose = {
                     tuningOpen = false
                     playerSheetOpen = false
-                }
+                },
+                topInset = topInset
             )
         }
     }
 
-    if (yearDialogOpen) {
-        YearPickerDialog(
-            currentYear = Calendar.getInstance().get(Calendar.YEAR),
-            onPick = { year ->
-                yearDialogOpen = false
-                viewModel.jumpToYear(year)
-            },
-            onDismiss = { yearDialogOpen = false }
+    if (dateDialogYear != 0) {
+        DateFilterDialog(
+            initialYear = dateDialogYear,
+            onDismiss = { dateDialogYear = 0 },
+            onPick = { year, month ->
+                dateDialogYear = 0
+                viewModel.jumpToDate(year, month)
+            }
         )
     }
 
@@ -419,9 +461,11 @@ fun AppScreen(
     }
 
     if (settingsOpen) {
-        CacheDialog(
+        SettingsDialog(
             cacheBytes = cacheBytes,
             downloads = downloads,
+            immersive = immersive,
+            onImmersiveChange = viewModel::setImmersive,
             onRemove = viewModel::removeOffline,
             onRetry = viewModel::retryOffline,
             onCleared = { cacheTick++ },
@@ -466,7 +510,12 @@ private fun DialogHost(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        modifier = Modifier.widthIn(max = 460.dp),
+        // 弹窗是独立窗口，主窗口那套状态栏避让传不进来。设置里把「隐藏状态栏」
+        // 关掉的一瞬间，状态栏就会直接压在标题和开关上，而 AlertDialog 默认
+        // 不响应外部点击、没有遮罩可以救场，只能自己让开。
+        modifier = Modifier
+            .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Vertical))
+            .widthIn(max = 460.dp),
         title = {
             Text(
                 title,
@@ -491,30 +540,71 @@ private fun DialogHost(
     )
 }
 
+/**
+ * 年份 + 月份选择。
+ *
+ * 顶栏的日历按钮去掉后，入口变成列表里的年份胶囊，所以这里必须让人看清
+ * 当前选的是哪一年；月份点一下就生效并关闭 —— 车机上少一步确认就少一次分心。
+ */
 @Composable
-private fun YearPickerDialog(
-    currentYear: Int,
-    onPick: (Int) -> Unit,
-    onDismiss: () -> Unit
+private fun DateFilterDialog(
+    initialYear: Int,
+    onDismiss: () -> Unit,
+    onPick: (year: Int, month: Int) -> Unit
 ) {
+    val currentYear = Calendar.getInstance().get(Calendar.YEAR)
     val years = (currentYear downTo 2003).toList()
+    var year by rememberSaveable { mutableIntStateOf(initialYear) }
+    val yearRow = rememberLazyListState()
+    // 打开就得看见当前选中的年份（可能是用户翻到 2016 年时点进来的），
+    // 已经在视野里就别动，免得点选时整排年份跟着弹
+    LaunchedEffect(year) {
+        val i = years.indexOf(year)
+        if (i >= 0 && yearRow.layoutInfo.visibleItemsInfo.none { it.index == i }) {
+            yearRow.scrollToItem(i)
+        }
+    }
+
     DialogHost(
         onDismiss = onDismiss,
-        title = "跳转到年份",
+        title = "跳转到日期",
         text = {
-            LazyColumn(Modifier.height(360.dp)) {
-                itemsIndexed(years) { _, year ->
-                    Text(
-                        "$year 年",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = AppColors.Ink,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .clickable { onPick(year) }
-                            .padding(horizontal = 14.dp, vertical = 13.dp)
-                    )
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    // 手机竖屏高度有限，月份铺开有四行，超高时得能滚
+                    .verticalScroll(rememberScrollState())
+            ) {
+                Text("年份", style = MaterialTheme.typography.titleSmall, color = AppColors.Muted)
+                Spacer(Modifier.height(8.dp))
+                // 年份只占一行：23 个年份要是全部平铺，弹窗比屏幕还高，
+                // 月份会被挤出屏幕外根本点不到
+                LazyRow(
+                    state = yearRow,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(years, key = { it }) { y ->
+                        DateChip(label = "$y", selected = y == year, onClick = { year = y })
+                    }
                 }
+                Spacer(Modifier.height(18.dp))
+                Text("月份", style = MaterialTheme.typography.titleSmall, color = AppColors.Muted)
+                Spacer(Modifier.height(8.dp))
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    DateChip(label = "全年", selected = false, onClick = { onPick(year, 0) })
+                    (1..12).forEach { m ->
+                        DateChip(label = "$m 月", selected = false, onClick = { onPick(year, m) })
+                    }
+                }
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    "选好后列表只保留那一段时间，标题右边的「看全部」随时退回完整列表。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = AppColors.Muted
+                )
             }
         },
         confirmText = "关闭",
@@ -524,9 +614,27 @@ private fun YearPickerDialog(
 }
 
 @Composable
-private fun CacheDialog(
+private fun DateChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    Text(
+        label,
+        style = MaterialTheme.typography.labelLarge.copy(
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
+        ),
+        color = if (selected) Color.White else AppColors.Body,
+        modifier = Modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(if (selected) AppColors.Red else AppColors.Canvas)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 10.dp)
+    )
+}
+
+@Composable
+private fun SettingsDialog(
     cacheBytes: Long?,
     downloads: List<DownloadManager.Entry>,
+    immersive: Boolean,
+    onImmersiveChange: (Boolean) -> Unit,
     onRemove: (Long) -> Unit,
     onRetry: (Long) -> Unit,
     onCleared: () -> Unit,
@@ -538,9 +646,37 @@ private fun CacheDialog(
 
     DialogHost(
         onDismiss = onDismiss,
-        title = "缓存管理",
+        title = "设置",
         text = {
-            Column(Modifier.verticalScroll(rememberScrollState())) {
+            Column(
+                Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+            ) {
+                // ---- 显示 ----
+                Text(
+                    "显示",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = AppColors.Muted
+                )
+                Spacer(Modifier.height(10.dp))
+                SwitchRow(
+                    title = "隐藏顶部状态栏",
+                    subtitle = "车机建议开启，顶栏不占画面、内容顶到上沿；" +
+                        "手机和平板建议关闭，才能一直看到时间和通知图标。",
+                    checked = immersive,
+                    onChange = onImmersiveChange
+                )
+
+                Spacer(Modifier.height(22.dp))
+
+                // ---- 缓存 ----
+                Text(
+                    "收听缓存",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = AppColors.Muted
+                )
+                Spacer(Modifier.height(10.dp))
                 Text(
                     "节目缓存：" + (cacheBytes?.let { formatSize(it) } ?: "统计中…") + " / 2 GB",
                     style = MaterialTheme.typography.titleMedium,
@@ -610,26 +746,62 @@ private fun CacheDialog(
                         }
                     }
                 }
-                if (clearing) {
-                    Spacer(Modifier.height(12.dp))
-                    CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
+                Spacer(Modifier.height(14.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    // 清理是本页唯一的破坏性操作，不能放在对话框右下角那个
+                    // 「主按钮」位置：拨完开关顺手点右下角就会把缓存清空
+                    TextButton(
+                        onClick = {
+                            clearing = true
+                            scope.launch {
+                                withContext(Dispatchers.IO) {
+                                    MediaCache.clear(context)
+                                }
+                                clearing = false
+                                onCleared()
+                            }
+                        },
+                        enabled = !clearing && (cacheBytes ?: 0L) > 0
+                    ) {
+                        Text(
+                            if (clearing) "清理中…" else "清理收听缓存",
+                            color = if (clearing || (cacheBytes ?: 0L) <= 0L) AppColors.Faint else AppColors.Red,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    if (clearing) {
+                        Spacer(Modifier.width(10.dp))
+                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                    }
                 }
             }
         },
-        confirmText = if (clearing) "清理中…" else "清理缓存",
-        confirmEnabled = !clearing && (cacheBytes ?: 0L) > 0,
-        onConfirm = {
-            clearing = true
-            scope.launch {
-                withContext(Dispatchers.IO) {
-                    MediaCache.clear(context)
-                }
-                clearing = false
-                onCleared()
-            }
-        },
-        dismissText = "关闭"
+        confirmText = "关闭",
+        onConfirm = onDismiss,
+        dismissText = null
     )
+}
+
+/** 设置页的开关行：左边标题 + 说明，右边开关 */
+@Composable
+private fun SwitchRow(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onChange: (Boolean) -> Unit
+) {
+    Row(
+        Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.titleMedium, color = AppColors.Ink)
+            Spacer(Modifier.height(4.dp))
+            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = AppColors.Muted)
+        }
+        Spacer(Modifier.width(14.dp))
+        Switch(checked = checked, onCheckedChange = onChange)
+    }
 }
 
 internal fun formatSize(bytes: Long): String = when {

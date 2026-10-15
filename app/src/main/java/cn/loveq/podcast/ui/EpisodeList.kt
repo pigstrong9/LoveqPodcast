@@ -22,12 +22,15 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -36,6 +39,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -48,6 +52,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -56,11 +61,21 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedback
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -69,9 +84,41 @@ import androidx.compose.ui.unit.sp
 import cn.loveq.podcast.data.Episode
 import cn.loveq.podcast.data.Progress
 import cn.loveq.podcast.ui.theme.AppColors
+import kotlin.math.abs
+import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 private val CardShape = RoundedCornerShape(16.dp)
+
+/** 左右滑动切分类：拖到面板宽度的这个比例即判定切换 */
+private const val SWIPE_FRACTION = 0.22f
+
+/** 甩动速度（dp/秒）达到这个值时，距离不到阈值也算切换 */
+private val SWIPE_FLING_VELOCITY_DP = 900.dp
+
+/** 双击标题回顶：超过这个条目数就不做逐格动画，直接瞬移 */
+private const val SNAP_TO_TOP_AFTER = 30
+
+/** 拖动时列表跟随手指的位移比例：跟得太死会让人以为整页要翻走 */
+private const val RUBBER_BAND = 0.12f
+
+/** 判定甩动所用的速度取样窗口：末事件太慢会漏判，窗口太长会把慢拖算成甩动 */
+private const val SWIPE_VELOCITY_WINDOW_NS = 60_000_000L
+
+/**
+ * 净位移 → 方向 → 换分类。松手（end）和被打断（cancel）两条路都走这里，
+ * 否则「划过去了却被系统打断」会变成完全没反应。
+ * 边界分类时 switchCategoryBy 自己夹住并返回 false，所以这里不会重复触发。
+ */
+private fun commitSwipe(
+    netDragPx: Float,
+    onSwipeCategory: (Int) -> Boolean,
+    haptics: HapticFeedback
+) {
+    if (netDragPx == 0f) return
+    val dir = if (netDragPx < 0f) 1 else -1
+    if (onSwipeCategory(dir)) haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+}
 
 /**
  * 批量选择模式的一揽子参数：三栏与窄屏两处列表共用，避免八个参数抄两遍。
@@ -90,7 +137,12 @@ data class SelectionArgs(
 private val ContinueShape = RoundedCornerShape(18.dp)
 private val YearShape = RoundedCornerShape(9.dp)
 
-/** 中间栏目：分类标题 + 继续收听 + 年份分组 + 节目列表 */
+/**
+ * 中间栏目：分类标题 + 继续收听 + 年份分组 + 节目列表
+ *
+ * [onSwipeCategory] 非空时启用「左右滑动列表换分类」（只在没有侧栏的窄屏启用），
+ * [swipeHint] 用来取相邻分类的名字做滑动提示，边界处返回 null。
+ */
 @Composable
 fun EpisodeListPane(
     state: ListUiState,
@@ -106,10 +158,16 @@ fun EpisodeListPane(
     loadPrevious: () -> Unit,
     refresh: () -> Unit,
     retry: () -> Unit,
+    onPickDate: (Int) -> Unit,
+    onClearDateFilter: () -> Unit,
     modifier: Modifier = Modifier,
     compact: Boolean = false,
+    /** 状态栏避让量：背景画到屏幕最上沿，只把内容挪下来，这样顶部不断层 */
+    topInset: WindowInsets = WindowInsets(0.dp, 0.dp, 0.dp, 0.dp),
     /** 底部要避让的浮层高度（迷你胶囊浮在列表上时传入），默认不避让 */
     bottomInset: Dp = 0.dp,
+    onSwipeCategory: ((Int) -> Boolean)? = null,
+    swipeHint: (Int) -> String? = { null },
     /** 长按进入的批量选择模式 */
     selection: SelectionArgs = SelectionArgs()
 ) {
@@ -141,8 +199,100 @@ fun EpisodeListPane(
     LaunchedEffect(state.scrollResetToken) {
         if (state.scrollResetToken > 0) listState.scrollToItem(0)
     }
+    val haptics = LocalHapticFeedback.current
+    val scope = rememberCoroutineScope()
+    // 滑动切分类：位移驱动橡皮筋 + 相邻分类提示
+    var dragPx by remember { mutableFloatStateOf(0f) }
+    var thresholdPx by remember { mutableFloatStateOf(1f) }
+    var paneWidthPx by remember { mutableFloatStateOf(1f) }
+    // 批量选择模式在长按里开启，而检测器是 composition 时才挂/摘的：
+    // 长按之后手指还会横着漂一点，那时旧的检测器还在收事件，会把分类切走，
+    // 也会让 dragPx 卡在一个非 0 值上（列表永久歪着、提示气泡退不掉）。
+    // 所以把 selecting 放进 key：进入选择模式立刻掐掉在途手势。
+    val selectingNow = rememberUpdatedState(selecting)
+    LaunchedEffect(state.category.id, selecting) {
+        // 手势归零交给这里统一负责，不指望 onDragEnd/onDragCancel 一定跑到
+        dragPx = 0f
+    }
+    val swipeModifier = if (onSwipeCategory != null && !selecting) {
+        Modifier
+            // fillMaxWidth 必须排在 pointerInput 之前：PointerInputScope.size 是
+            // 「应用本 modifier 时节点的约束宽」。本面板在窄屏里就是整列宽，
+            // 所以先限宽能拿到真实面板宽；写在后面则 size 会停在父级最大约束宽。
+            // （weight(1f) 只能留在调用点：它是 ColumnScope 的成员扩展，
+            //   在这个作用域里根本写不出来。）
+            .fillMaxWidth()
+            .graphicsLayer { translationX = dragPx * RUBBER_BAND }
+            .pointerInput(state.category.id, selecting) {
+                val flingPx = with(density) { SWIPE_FLING_VELOCITY_DP.toPx() }
+                // detectHorizontalDragGestures 的 onDragEnd 不带速度，只能自己记。
+                // 但不能拿「最后一个事件」当速度：抬手前手指本来就会减速，
+                // 末事件算出来只有 60~240 px/s，够不到 900 dp 的门槛；
+                // 而且 60Hz/120Hz 下同一记甩动对应的单事件位移差一倍。
+                // 改成在最近 SWIPE_VELOCITY_WINDOW_NS 这一段窗口上取平均速度：
+                // windowPx 只在窗口滚满时才挪，否则又会退化成末事件速度。
+                // 它必须和 startPx 分开：窗口一滚满就把起点覆盖成「位移量」的话，
+                // 之后的 dragPx = 当前坐标 − 位移量，符号都会算反 —— 左划变成切到上一个分类
+                var startPx = 0f
+                var windowPx = 0f
+                var windowNanos = 0L
+                var velocity = 0f
+                detectHorizontalDragGestures(
+                    onDragStart = { start ->
+                        paneWidthPx = size.width.toFloat().coerceAtLeast(1f)
+                        thresholdPx = (size.width * SWIPE_FRACTION)
+                            .coerceAtLeast(viewConfiguration.touchSlop * 4f)
+                        startPx = start.x
+                        windowNanos = 0L
+                        velocity = 0f
+                    },
+                    onHorizontalDrag = { change, _ ->
+                        // 累计位移会在「划出去又划回来」时越攒越大，
+                        // 抬手时明明回到原点却仍然判定为切换。用净位移。
+                        dragPx = change.position.x - startPx
+                        val now = System.nanoTime()
+                        if (windowNanos == 0L) {
+                            windowNanos = now
+                            windowPx = dragPx
+                        } else if (now - windowNanos >= SWIPE_VELOCITY_WINDOW_NS) {
+                            val dt = now - windowNanos
+                            velocity = (dragPx - windowPx) * 1_000_000_000f / dt
+                            windowPx = dragPx
+                            windowNanos = now
+                        }
+                    },
+                    // 松手前被系统打断（返回手势、车机抢焦点）或第二根手指落下，
+                    // 都会走 cancel 而不是 end。以前这里只把位移清零，
+                    // 用户明明已经划过去一大截却毫无反应，只能重划一次。
+                    onDragCancel = {
+                        if (!selectingNow.value && abs(dragPx) >= thresholdPx) {
+                            commitSwipe(dragPx, onSwipeCategory, haptics)
+                        }
+                        dragPx = 0f
+                    },
+                    onDragEnd = {
+                        val far = abs(dragPx) >= thresholdPx
+                        val flung = velocity * dragPx > 0f && abs(velocity) >= flingPx
+                        if (!selectingNow.value && (far || flung)) {
+                            commitSwipe(dragPx, onSwipeCategory, haptics)
+                        }
+                        dragPx = 0f
+                    }
+                )
+            }
+    } else {
+        Modifier.fillMaxWidth()
+    }
+    val swipeHintLabel = if (dragPx <= 0f) swipeHint(1) else swipeHint(-1)
+    val swipeProgress = ((abs(dragPx) / paneWidthPx) / SWIPE_FRACTION).coerceIn(0f, 1f)
 
-    Column(modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+    Column(
+        modifier
+            .fillMaxSize()
+            // 底色铺满（含状态栏底下），内容再避让 —— 与侧栏/顶栏同一套做法
+            .background(MaterialTheme.colorScheme.background)
+            .windowInsetsPadding(topInset)
+    ) {
         if (selecting) {
             Row(
                 Modifier
@@ -175,25 +325,73 @@ fun EpisodeListPane(
                     .padding(start = 26.dp, end = 26.dp, top = 20.dp, bottom = 10.dp),
                 verticalAlignment = Alignment.Bottom
             ) {
+                // 双击标题回到最顶部（最新一期）：翻了几百期之后单手划回去很费劲，
+                // 这里空出一块永远在原地的大热区。单击不做任何事，避免和双击抢判定
                 Text(
                     state.category.name,
                     style = if (compact) MaterialTheme.typography.headlineSmall
                     else MaterialTheme.typography.displaySmall,
                     color = AppColors.Ink,
-                    modifier = Modifier.alignByBaseline()
+                    modifier = Modifier
+                        .alignByBaseline()
+                        .combinedClickable(
+                            indication = null,
+                            interactionSource = remember { MutableInteractionSource() },
+                            onDoubleClick = {
+                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                scope.launch {
+                                    // animateScrollToItem 会一格一格滚过去：
+                                    // 翻了几百期之后「回顶部」要磨蹭好几秒，超过阈值直接瞬移
+                                    if (listState.firstVisibleItemIndex > SNAP_TO_TOP_AFTER) {
+                                        listState.scrollToItem(0)
+                                    } else {
+                                        listState.animateScrollToItem(0)
+                                    }
+                                }
+                            },
+                            onClick = {}
+                        )
                 )
                 Spacer(Modifier.width(12.dp))
                 Text(
                     buildString {
-                        if (archiveCount > 0) append("$archiveCount 期")
-                        else append("已加载 ${state.episodes.size} 期")
-                        append(" · 新到旧")
+                        // 筛选态下官网总期数已经没有意义，说清楚现在看的是哪一段
+                        if (state.filtering) {
+                            append(
+                                if (state.filterMonth == 0) "${state.filterYear} 年"
+                                else "${state.filterYear} 年 ${state.filterMonth} 月"
+                            )
+                            append(" · ${state.episodes.size} 期")
+                        } else {
+                            if (archiveCount > 0) append("$archiveCount 期")
+                            else append("已加载 ${state.episodes.size} 期")
+                            append(" · 新到旧")
+                        }
                     },
                     style = MaterialTheme.typography.labelMedium,
                     color = AppColors.Muted,
-                    modifier = Modifier.alignByBaseline()
+                    modifier = Modifier
+                        .weight(1f)
+                        .alignByBaseline()
                 )
+                if (state.filtering) {
+                    TextButton(onClick = onClearDateFilter) {
+                        Text("看全部", color = AppColors.Red, fontWeight = FontWeight.Bold)
+                    }
+                }
             }
+        }
+
+        // 定位历史年份要发几次网络请求，进度条必须放在用户眼前这一屏：
+        // 原先只有列表底部 footer 有转圈，而那时用户正停在列表顶部，什么都看不见
+        if (state.jumping) {
+            LinearProgressIndicator(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(3.dp),
+                color = AppColors.Red,
+                trackColor = AppColors.RedMist
+            )
         }
 
         // 断网兜底：列表来自本地索引而不是官网，必须说清楚，否则用户以为只有这么多期
@@ -209,9 +407,9 @@ fun EpisodeListPane(
         PullToRefreshBox(
             isRefreshing = state.refreshing,
             onRefresh = refresh,
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f)
+            // 纵向 weight(1f) 只能在 Column 作用域里写，留在调用点；
+            // 横向 fillMaxWidth 必须先进 swipeModifier（见上面的说明）
+            modifier = swipeModifier.weight(1f)
         ) {
             when {
                 state.initialLoading -> {
@@ -268,7 +466,7 @@ fun EpisodeListPane(
                         itemsIndexed(state.episodes, key = { _, episode -> episode.id }) { index, episode ->
                             val prevYear = state.episodes.getOrNull(index - 1)?.year
                             if (episode.year != 0 && episode.year != prevYear) {
-                                YearPill(episode.year)
+                                YearPill(episode.year, onPickDate)
                             }
                             val current = playingMediaId == episode.id.toString()
                             EpisodeRow(
@@ -292,11 +490,39 @@ fun EpisodeListPane(
                                 loading = state.loadingDown || state.jumping,
                                 endReached = state.endReached,
                                 error = state.loadMoreError,
+                                // 筛选态的「到底」是这一段听完了，不是全站到 2003 年
+                                endText = if (state.filtering) {
+                                    if (state.filterMonth == 0) "${state.filterYear} 年就这些"
+                                    else "${state.filterYear} 年 ${state.filterMonth} 月就这些"
+                                } else {
+                                    "已经到底啦 · 2003.06.15"
+                                },
                                 onRetry = loadNext
                             )
                         }
                     }
                 }
+            }
+
+            // 滑动切分类的落点提示：手指拖到哪一侧，那侧浮出下一个分类名
+            if (swipeHintLabel != null && abs(dragPx) > 24f) {
+                Text(
+                    swipeHintLabel,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = AppColors.RedDeep,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .align(
+                            if (dragPx < 0f) Alignment.CenterEnd else Alignment.CenterStart
+                        )
+                        .padding(horizontal = 18.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(AppColors.RedMist.copy(alpha = 0.92f))
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                        .alpha(0.35f + 0.65f * swipeProgress)
+                )
             }
         }
     }
@@ -411,8 +637,12 @@ private fun ContinueCard(
     }
 }
 
+/**
+ * 年份分组标记，同时是「跳到这一天」的入口：
+ * 顶栏那个日历按钮去掉了，年份数字本身就在列表里，点它比绕道工具栏近得多。
+ */
 @Composable
-private fun YearPill(year: Int) {
+private fun YearPill(year: Int, onPickDate: (Int) -> Unit) {
     Text(
         "$year",
         style = MaterialTheme.typography.labelMedium.copy(
@@ -423,6 +653,7 @@ private fun YearPill(year: Int) {
             .padding(top = 8.dp, bottom = 6.dp)
             .clip(YearShape)
             .background(AppColors.RedMist)
+            .clickable(onClickLabel = "跳转到 $year 年") { onPickDate(year) }
             .padding(horizontal = 12.dp, vertical = 3.dp)
     )
 }
@@ -620,7 +851,13 @@ private fun EpisodeRow(
 }
 
 @Composable
-private fun ListFooter(loading: Boolean, endReached: Boolean, error: Boolean, onRetry: () -> Unit) {
+private fun ListFooter(
+    loading: Boolean,
+    endReached: Boolean,
+    error: Boolean,
+    endText: String,
+    onRetry: () -> Unit
+) {
     Box(
         Modifier.fillMaxWidth().padding(vertical = 18.dp),
         contentAlignment = Alignment.Center
@@ -628,7 +865,7 @@ private fun ListFooter(loading: Boolean, endReached: Boolean, error: Boolean, on
         when {
             loading -> CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp, color = AppColors.Red)
             endReached -> Text(
-                "已经到底啦 · 2003.06.15",
+                endText,
                 style = MaterialTheme.typography.labelMedium,
                 color = AppColors.Muted
             )

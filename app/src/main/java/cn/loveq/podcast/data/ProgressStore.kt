@@ -36,6 +36,21 @@ class ProgressStore(context: Context) {
     private val _lastId = MutableStateFlow<Long?>(null)
     val lastId: StateFlow<Long?> = _lastId
 
+    /**
+     * 是否隐藏顶部状态栏（沉浸式）。
+     *
+     * 车机顶栏占着一条、又要全屏观感，所以默认隐藏（与历史行为一致）；
+     * 手机/平板上要看到时间和通知图标，可以在设置里关掉。
+     * 用 StateFlow 暴露：Activity 订阅它即时切换，不必重启界面。
+     */
+    private val _immersive = MutableStateFlow(prefs.getBoolean(KEY_IMMERSIVE, true))
+    val immersive: StateFlow<Boolean> = _immersive
+
+    fun setImmersive(hidden: Boolean) {
+        _immersive.value = hidden
+        persist(prefs.edit().putBoolean(KEY_IMMERSIVE, hidden))
+    }
+
     init {
         reload()
     }
@@ -139,6 +154,7 @@ class ProgressStore(context: Context) {
         const val KEY_LAST = "last_id"
         const val KEY_SPEED = "speed"
         const val KEY_BOOST = "boost"
+        const val KEY_IMMERSIVE = "immersive"
         const val DONE_EPSILON = 30_000L
     }
 }
