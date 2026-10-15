@@ -3,6 +3,16 @@
 从官方 App 中剥离播客功能重做的精简播放器：无登录、无商城、无推送，只用官网公开数据。
 专为 BYD DiLink 4.0 车机设计，同时兼容手机。
 
+## 界面预览
+
+| 播放设置 | 全屏播放 |
+|---------|---------|
+| ![播放设置](screenshots/01-player-settings.jpg) | ![全屏播放](screenshots/02-player-fullscreen.jpg) |
+
+| 节目列表 | 横屏分屏 |
+|---------|---------|
+| ![节目列表](screenshots/03-episode-list.jpg) | ![横屏分屏](screenshots/04-split-screen.jpg) |
+
 ## 功能
 
 - 节目列表：2003 年至今全部节目（官网 `program.html?cat_id=1`），下拉刷新、按年份跳转
