@@ -406,6 +406,17 @@ class PlaybackService : MediaSessionService() {
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             val index = player.currentMediaItemIndex
             val episode = queue.getOrNull(index) ?: return
+            if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO) {
+                // AUTO 只代表「上一期自然播完」：把它标成听完并删掉离线文件。
+                // 这段不能留在 STATE_ENDED 里 —— 队列还有下一期时 ExoPlayer 直接自动连播，
+                // STATE_ENDED 只在整条队列放完才回调，绝大多数节目永远走不到那条路，
+                // 于是「听完自动删除」实际从来没生效过（实测：播完一期，124MB 仍留在盘上）
+                val finished = queue.getOrNull(index - 1)
+                if (finished != null) {
+                    app.progressStore.markDone(finished.id, currentTitle, finished.date)
+                    app.downloads.remove(finished.id)
+                }
+            }
             currentTitle = mediaItem?.mediaMetadata?.title?.toString() ?: episode.title
             app.queueStore.save(queue, index)
             if (mediaItem?.localConfiguration?.uri?.toString() == PLACEHOLDER_URI &&
