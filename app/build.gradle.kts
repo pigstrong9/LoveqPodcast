@@ -93,5 +93,7 @@ dependencies {
     implementation(libs.jsoup)
     implementation(libs.kotlinx.coroutines.android)
     testImplementation(libs.junit)
+    // mockable android.jar 里 org.json 是桩：单测要用真实实现才能解析 JSON
+    testImplementation(libs.json)
     debugImplementation(libs.androidx.compose.ui.tooling)
 }
