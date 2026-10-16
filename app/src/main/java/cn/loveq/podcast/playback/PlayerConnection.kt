@@ -60,10 +60,15 @@ class PlayerConnection(context: Context) {
     val nowTitle = MutableStateFlow<String?>(null)
     val nowDate = MutableStateFlow<String?>(null)
 
-    /** 与服务连上、并且已同步过一次状态（[refreshStaticState]）。见 [resumeOnLaunch] */
-    val connected = MutableStateFlow(false)
+    /** 与服务连上、并且已同步过一次状态（[refreshStaticState]）。只给 [resumeOnLaunch] 用，不外露 */
+    private val connected = MutableStateFlow(false)
 
-    /** 连上后执行一次的动作，见 [resumeOnLaunch] */
+    /**
+     * 连上后执行一次的动作，见 [resumeOnLaunch]。
+     *
+     * 只挂一个：再挂会悄悄顶掉前一个（当前只有 ViewModel 在 init 里挂一次）。
+     * 要是哪天多出第二个调用方，这里改成 `check(onConnected == null)` 直接炸出来更好。
+     */
     private var onConnected: (() -> Unit)? = null
 
     private val controllerFuture: ListenableFuture<MediaController> = MediaController.Builder(
@@ -83,7 +88,14 @@ class PlayerConnection(context: Context) {
                 controller = c
                 c.addListener(listener)
                 refreshStaticState()
-                // 自动续播要在 pendingPlay 之前跑：用户已经点下的播，优先于自动行为
+                // 顺序是有意的，两步都不能换位：
+                // · 自动续播要排在 pendingPlay 之前 —— 用户已经点下的播优先于自动行为，
+                //   而「已经点过」正是看 pendingPlay != null（playQueue 在没连上时存这里）。
+                // · 它又必须在 refreshStaticState() 之后 —— resumeOnLaunch 用 mediaId 判断
+                //   「服务里已经有队列了吗」，mediaId 就是上一步填的，不能提前读。
+                // 这里读到的不是过期值：media3 保证 connect 回调触发时播放器状态已同步完
+                // （MediaControllerHolder 要 controller 与 accepted 齐了才完成 future，
+                // 而 accepted 是在 onConnected 读完 playerInfo 之后才置位）。
                 onConnected?.let { it() }
                 onConnected = null
                 pendingPlay?.let { (episodes, index) ->

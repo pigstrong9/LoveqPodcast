@@ -230,12 +230,13 @@ internal fun progressIdsToPrune(
 /**
  * 启动自动续播该不该发生。
  *
- * 判断和列表顶部那颗「继续播放」保持一致（见 EpisodeList：`!lastProgress.done` 才显示）：
- * 那期已经听完就不续 —— 服务里对「听完」的一期是从 **0** 重新播（见
+ * 「还能不能接着听」只有 [canResume] 一处定义，列表顶部那颗「继续播放」和这里
+ * 引的是同一条 —— 界面不提供的事，自动也不做。
+ * 听完的一期不续：服务对「听完」是从 **0** 重新播（见
  * PlaybackService.startAtSavedPosition），于是每次点火都会把上一期从头再放一遍，
- * 听着就是「它自己乱放」。**界面不提供的事，自动也不做。**
+ * 听着就是「它自己乱放」。
  *
  * 纯函数，便于 JVM 单测。
  */
 internal fun shouldAutoResume(enabled: Boolean, progress: Progress?): Boolean =
-    enabled && progress != null && !progress.done
+    enabled && progress?.canResume == true

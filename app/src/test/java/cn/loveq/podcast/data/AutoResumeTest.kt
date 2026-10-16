@@ -43,4 +43,10 @@ class AutoResumeTest {
         assertFalse(shouldAutoResume(enabled = true, progress = null))
         assertFalse(shouldAutoResume(enabled = false, progress = null))
     }
+
+    @Test
+    fun `canResume 是「听完」的唯一出处——界面与闸门引同一条`() {
+        assertTrue(progress(1, done = false).canResume)
+        assertFalse(progress(1, done = true).canResume)
+    }
 }

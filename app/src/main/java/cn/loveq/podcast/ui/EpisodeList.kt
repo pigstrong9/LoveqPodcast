@@ -83,6 +83,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import cn.loveq.podcast.data.Episode
 import cn.loveq.podcast.data.Progress
+import cn.loveq.podcast.data.canResume
 import cn.loveq.podcast.ui.theme.AppColors
 import kotlin.math.abs
 import kotlinx.coroutines.launch
@@ -441,7 +442,7 @@ fun EpisodeListPane(
                             bottom = 14.dp + bottomInset
                         )
                     ) {
-                        if (lastProgress != null && !lastProgress.done) {
+                        if (lastProgress != null && lastProgress.canResume) {
                             item(key = "continue") {
                                 ContinueCardSlot(
                                     visible = showContinue,

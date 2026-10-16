@@ -72,3 +72,14 @@ data class Progress(
     val date: String,
     val updatedAt: Long
 )
+
+/**
+ * 这一期还能接着听吗 —— 「听完」这条规则的唯一出处。
+ *
+ * 听完的一期有两层影响，必须统一：服务对听完的一期是从 **0** 重新播
+ * （见 PlaybackService.startAtSavedPosition），所以听完的既不该在列表顶部给
+ * 「继续播放」，也不该被启动自动续播接上。界面不提供的事，自动也不做。
+ *
+ * 因此列表（EpisodeList）和闸门（[shouldAutoResume]）都引这里，别各写各的 `!done`。
+ */
+internal val Progress.canResume: Boolean get() = !done
