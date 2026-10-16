@@ -1,6 +1,13 @@
 package cn.loveq.podcast.data
 
+import android.content.Context
 import java.io.IOException
+import java.util.concurrent.TimeUnit
+import kotlin.coroutines.cancellation.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import org.json.JSONObject
 
 /** 一次可以安装的发布 */
@@ -78,4 +85,98 @@ internal fun parseLatestRelease(json: String): ReleaseInfo? {
         sha256 = sha256,
         notes = root.optString("body").trim()
     )
+}
+
+/**
+ * 取「最新发布」的来源。
+ *
+ * 抽成接口是为了让夹具构建能整个换掉它 —— 不给 GithubReleases 塞一个假基址，
+ * 那样真实现里就永远留着一行测试代码。
+ */
+internal interface ReleaseSource {
+    suspend fun latest(): ReleaseInfo
+}
+
+/**
+ * 唯一碰 GitHub 的地方。
+ *
+ * 自带 OkHttpClient，刻意不复用 [LoveqRepository]：后者那套全局限速闸门与冷却阶梯
+ * 是为 loveq.cn 的 405 定制的，GitHub 请求既不该被官网的冷却拦住，
+ * 也不该去挤官网的请求槽（[DownloadManager] 也是这么分开的）。
+ */
+internal class GithubReleases(private val memory: SourceMemory) : ReleaseSource {
+
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .callTimeout(60, TimeUnit.SECONDS)
+        .build()
+
+    override suspend fun latest(): ReleaseInfo = withContext(Dispatchers.IO) {
+        val rotation = SourceRotation(
+            UpdateSources.promoted(UpdateSources.API, memory.lastOk(KEY_API))
+        )
+        var lastError: Exception? = null
+        while (true) {
+            val prefix = rotation.next() ?: break
+            val url = prefix + LATEST_URL
+            try {
+                val info = parseLatestRelease(get(url))
+                    ?: throw UpdateCheckException("响应里没有可安装的发布 - $url")
+                // 成功才记：失败也记的话，下次会把一个坏源排在第一个
+                memory.remember(KEY_API, prefix)
+                return@withContext info
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                lastError = e
+            }
+        }
+        throw UpdateCheckException("所有源都取不到版本信息", lastError)
+    }
+
+    private fun get(url: String): String {
+        val request = Request.Builder()
+            .url(url)
+            // GitHub API 强制要求带 UA；写明身份，不伪装也不轮换
+            .header("User-Agent", USER_AGENT)
+            .build()
+        client.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                throw UpdateCheckException("HTTP ${response.code} - $url")
+            }
+            return response.body?.string() ?: throw UpdateCheckException("空响应 - $url")
+        }
+    }
+
+    companion object {
+        const val LATEST_URL =
+            "https://api.github.com/repos/pigstrong9/LoveqPodcast/releases/latest"
+
+        /** 「上次成功的源」在 prefs 里的键 */
+        const val KEY_API = "api"
+        const val KEY_ASSET = "asset"
+
+        const val USER_AGENT =
+            "LoveqPodcast/1.5 (+https://github.com/pigstrong9/LoveqPodcast)"
+    }
+}
+
+/**
+ * 夹具源：读打包进来的真实响应快照。
+ *
+ * 只有 fixture 构建里有这个 asset（`app/src/fixture/assets/`），
+ * 而 BuildConfig.UPDATE_USE_FIXTURE 是编译期常量，release 里 R8 会把
+ * 整个分支连同这个类一起删掉。
+ */
+internal class FixtureReleaseSource(private val context: Context) : ReleaseSource {
+
+    override suspend fun latest(): ReleaseInfo = withContext(Dispatchers.IO) {
+        val json = context.assets.open(ASSET_NAME).use { it.readBytes().decodeToString() }
+        parseLatestRelease(json) ?: throw UpdateCheckException("夹具解析失败：$ASSET_NAME")
+    }
+
+    companion object {
+        const val ASSET_NAME = "update_fixture.json"
+    }
 }
