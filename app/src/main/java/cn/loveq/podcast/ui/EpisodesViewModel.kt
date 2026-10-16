@@ -327,8 +327,13 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
      * 这类失败最容易被误读成「你网络有问题」——用户于是去重启路由器、换 4G，
      * 而实际上什么都做不了，只能等。所以要说清是「等」，不是「修」。
      */
-    private fun rateLimitText(): String =
-        "官网限制了访问，约 ${loveqApp.rateLimitGuard.describeRemaining()}后自动恢复"
+    private fun rateLimitText(): String {
+        // 冷却可能刚好在「抛出异常」与「拼文案」之间的几毫秒里到期；不兜底就会拼出
+        //「约 后自动恢复」这种残句
+        val remaining = loveqApp.rateLimitGuard.describeRemaining()
+        return if (remaining.isEmpty()) "官网限制了访问，请稍后再试"
+        else "官网限制了访问，约 ${remaining}后自动恢复"
+    }
 
     fun loadNextPage() {
         val s = _state.value

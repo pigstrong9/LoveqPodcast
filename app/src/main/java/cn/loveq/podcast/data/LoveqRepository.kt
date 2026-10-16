@@ -28,8 +28,7 @@ class LoveqRepository(private val guard: RateLimitGuard) {
     /** 全局闸门的锁只保护「预约时间槽」那一瞬间，不覆盖网络请求本身 */
     private val rateLock = Mutex()
 
-    /** 下一个可发请求的时间点（nanoTime 毫秒） */
-    private var nextSlotAtMs = 0L
+    private val pacer = RequestPacer()
 
     suspend fun loadPage(page: Int, catId: Int = Category.CANTONESE_ID): PageResult {
         val html = fetch("$SITE/program.html?cat_id=$catId&page=$page")
@@ -108,17 +107,14 @@ class LoveqRepository(private val guard: RateLimitGuard) {
      *
      * 各加载循环原本各自 delay，但它们会互相叠加 —— 建索引的同时翻页、取直链，
      * 实际瞬时频率是失控的。这里用「预约时间槽」统一排开：每个调用者领一个不早于
-     * [MIN_REQUEST_INTERVAL_MS] 的槽位，先到先得。
+     * [RequestPacer.MIN_REQUEST_INTERVAL_MS] 的槽位，先到先得。
      *
      * 只锁计算槽位的那一瞬间，不占着锁做网络请求 —— 否则一次超时会把后续所有
      * 请求（包括用户在等的翻页）全卡在锁上。
      */
     private suspend fun awaitTurn() {
         val waitMs = rateLock.withLock {
-            val now = System.nanoTime() / 1_000_000L
-            val slot = maxOf(now, nextSlotAtMs)
-            nextSlotAtMs = slot + MIN_REQUEST_INTERVAL_MS
-            slot - now
+            pacer.reserve(System.nanoTime() / 1_000_000L)
         }
         if (waitMs > 0L) delay(waitMs)
     }
@@ -146,13 +142,6 @@ class LoveqRepository(private val guard: RateLimitGuard) {
          * 由下面的全局闸门兜底就够了。
          */
         const val CRAWL_DELAY_MS = 1_500L
-
-        /**
-         * 全局闸门的最小间隔，兜底用：任何调用路径叠加起来也不会超过 2 请求/秒。
-         * 比 [CRAWL_DELAY_MS] 松，是为了不把「用户点播放」「跳到某一年」也拖慢 ——
-         * 那些请求后面有人在等。
-         */
-        private const val MIN_REQUEST_INTERVAL_MS = 500L
 
         /**
          * UA 保留浏览器主体（免得被 WAF 一眼挡掉），后面追加自己的身份。

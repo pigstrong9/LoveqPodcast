@@ -15,10 +15,15 @@ import org.junit.Test
 class RateLimitGuardTest {
 
     private class MemoryStore : RateLimitStore {
-        private val map = mutableMapOf<String, Long>()
-        override fun readLong(key: String, def: Long): Long = map[key] ?: def
-        override fun writeLong(key: String, value: Long) {
-            map[key] = value
+        var strikes = 0L
+        var untilMs = 0L
+        var writes = 0
+        override fun readStrikes(): Long = strikes
+        override fun readUntilMs(): Long = untilMs
+        override fun write(strikes: Long, untilMs: Long) {
+            writes++
+            this.strikes = strikes
+            this.untilMs = untilMs
         }
     }
 
@@ -43,6 +48,16 @@ class RateLimitGuardTest {
         assertEquals(30 * minute, g.onRateLimited())
         assertTrue(g.isBlocked())
         assertEquals(30 * minute, g.blockedForMs())
+    }
+
+    @Test
+    fun `被拒时两个数字一次写入，不留中间态`() {
+        val store = MemoryStore()
+        guard(store).onRateLimited()
+        // 分两次写：中间断电会留下「新档位 + 旧期限」的组合
+        assertEquals(1, store.writes)
+        assertEquals(1L, store.strikes)
+        assertTrue(store.untilMs > now)
     }
 
     @Test

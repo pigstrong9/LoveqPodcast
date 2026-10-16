@@ -36,8 +36,12 @@ class EpisodeIndexStore(context: Context, private val guard: RateLimitGuard) {
     private var pagesDone = 0
     private var totalPagesKnown = 1
 
-    /** 缓存最后落盘时间，用来判断增量刷新还有没有必要 */
+    /** 缓存最后落盘（检查）时间，用来判断增量刷新还有没有必要 */
     private var cachedAt = 0L
+
+    /** 索引还没建全：分类和搜索会缺节目 */
+    private val indexIncomplete: Boolean
+        get() = _episodes.value.isEmpty() || pagesDone < totalPagesKnown
 
     fun ensureIndex(repository: LoveqRepository) {
         if (buildJob?.isActive == true || _episodes.value.isNotEmpty()) return
@@ -55,32 +59,28 @@ class EpisodeIndexStore(context: Context, private val guard: RateLimitGuard) {
     }
 
     /**
-     * 索引推进循环。
+     * 启动索引推进。
      *
-     * 冷却时不是「另排一个新任务」，而是在**同一个 job 里等** —— 这样 buildJob 只有一处
-     * 赋值，不会出现「协程体里改了 buildJob、外面 `buildJob = launch{}` 又覆盖回去」的竞态
-     * （那样会把续抓任务的引用丢掉）。
+     * 冷却时不是「另排一个新任务」，而是在**同一个 job 里等**（循环体见 [runIndexLoop]）——
+     * 这样 buildJob 只有一处赋值，不会出现「协程体里改了 buildJob、外面
+     * `buildJob = launch{}` 又覆盖回去」的竞态（那样会把续抓任务的引用丢掉）。
      *
      * 反复被拒也没关系：冷却阶梯 6 小时封顶，一天最多几次请求，是礼貌重试，不是敲门。
      */
     private fun startIndexing(repository: LoveqRepository, respectTtl: Boolean) {
         buildJob = scope.launch {
-            var mode = respectTtl
-            while (true) {
-                // null = 这次没事可做了；否则是「等这么久再来」
-                val waitMs = advanceIndex(repository, mode) ?: return@launch
-                delay(waitMs)
-                // 续抓一律按启动语义：这期间索引可能已经完整，不该无条件再刷一次
-                mode = true
-            }
+            runIndexLoop(
+                respectTtl = respectTtl,
+                advance = { advanceIndex(repository, it) }
+            )
         }
     }
 
     /**
      * 推进一轮：先把磁盘缓存读进来，再决定补齐断点 / 增量刷新 / 什么都不做。
      *
-     * @param respectTtl 启动路径为 true（缓存还新鲜就不刷，这就是「平时零请求」的来源）；
-     *                   下拉刷新为 false（强制走一次增量）
+     * @param respectTtl 启动路径为 true（缓存还新鲜就不刷 —— 24 小时内再启动一次也不会发请求，
+     *                   这就是「平时零请求」的来源）；下拉刷新为 false（强制走一次增量）
      * @return 需要等多久再续（官网冷却中）；null 表示这一轮已经没事可做
      */
     private suspend fun advanceIndex(repository: LoveqRepository, respectTtl: Boolean): Long? {
@@ -96,8 +96,7 @@ class EpisodeIndexStore(context: Context, private val guard: RateLimitGuard) {
 
         // 索引完整又还新鲜：启动时直接收工，一次请求都不发。
         // 放在冷却检查之前 —— 这种情况本来就无事可做，不该报「索引暂停更新」
-        val incomplete = _episodes.value.isEmpty() || pagesDone < totalPagesKnown
-        if (!incomplete && respectTtl && cachedAt >= System.currentTimeMillis() - DAY_MS) return null
+        if (!indexIncomplete && respectTtl && cachedAt >= System.currentTimeMillis() - DAY_MS) return null
 
         if (guard.isBlocked()) {
             announceCooldownOnce()
@@ -124,14 +123,20 @@ class EpisodeIndexStore(context: Context, private val guard: RateLimitGuard) {
      *
      * 索引不全时分类和搜索都会缺节目；原来的静默跳过会让用户只看到
      * 「列表莫名其妙少了一段」，既不知道该等，也不知道不是应用坏了。
+     * 索引本来就是全的（只是这次刷新被推迟）就不说「暂停更新」——
+     * 那会让用户以为数据缺了一块。
      *
      * 同一段冷却只说一次：自动续抓会反复撞它，用户也可能连点几下下拉刷新。
-     * 这里必须真的报出「等多久」——而且外层循环真的会到点续抓，不是空头承诺。
      */
     private fun announceCooldownOnce() {
         if (!guard.shouldAnnounceCooldown()) return
+        val what = if (indexIncomplete) "节目索引暂停更新" else "刷新已暂停"
+        // 冷却可能刚好在「判定」与「拼文案」之间的几毫秒里到期；不兜底就会拼出
+        //「约 后自动恢复」这种残句
+        val remaining = guard.describeRemaining()
         PlaybackEvents.report(
-            "官网暂时限制了访问，节目索引暂停更新，约 ${guard.describeRemaining()}后自动恢复"
+            if (remaining.isEmpty()) "官网暂时限制了访问，$what，请稍后再试"
+            else "官网暂时限制了访问，$what，约 ${remaining}后自动恢复"
         )
     }
 
@@ -200,11 +205,14 @@ class EpisodeIndexStore(context: Context, private val guard: RateLimitGuard) {
             }
             if (fetched.isNotEmpty()) {
                 val fetchedIds = fetched.mapTo(HashSet()) { it.id }
-                val merged = fetched + old.filterNot { it.id in fetchedIds }
-                _episodes.value = merged
-                pagesDone = totalPagesKnown
-                writeCache(merged, pagesDone, totalPagesKnown)
+                _episodes.value = fetched + old.filterNot { it.id in fetchedIds }
             }
+            pagesDone = totalPagesKnown
+            // 有没有新节目都要落一次盘：savedAt 表示「最后检查时间」，不是「最后变更时间」。
+            // 否则「刷新了但没新节目」这条最常见的路径不会更新 savedAt，缓存永远被判成不新鲜，
+            // 于是每次启动都白发一个请求 —— 车机一天启动几次就是几个请求，
+            // 而写一次盘比发一个请求便宜得多。
+            writeCache(_episodes.value, pagesDone, totalPagesKnown)
         } catch (e: CancellationException) {
             throw e
         } catch (e: RateLimitedException) {

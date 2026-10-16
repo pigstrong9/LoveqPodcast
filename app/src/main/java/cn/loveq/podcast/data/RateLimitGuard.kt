@@ -15,14 +15,18 @@ import java.io.IOException
 class RateLimitedException(val code: Int, url: String) : IOException("HTTP $code - $url")
 
 /**
- * 只存两个数字。
+ * 冷却状态的持久化。
  *
  * 不用 SharedPreferences 本身，是因为要测「冷却能不能跨重启」就得把它整份实现一遍，
- * 而这里要的只是两个 long。
+ * 而这里要的只是两个数字。
+ *
+ * 两个数字**必须一次性写完**：分两次 apply()，中间断电会留下「新档位 + 旧期限」的
+ * 组合 —— 语义上可以接受，但没有理由留着这种中间态。
  */
 interface RateLimitStore {
-    fun readLong(key: String, def: Long): Long
-    fun writeLong(key: String, value: Long)
+    fun readStrikes(): Long
+    fun readUntilMs(): Long
+    fun write(strikes: Long, untilMs: Long)
 }
 
 /**
@@ -50,11 +54,11 @@ class RateLimitGuard(
 
     /** 冷却到什么时候（epoch ms）。过去的时间点等于没在冷却 */
     @Volatile
-    private var untilMs: Long = store?.readLong(KEY_UNTIL, 0L) ?: 0L
+    private var untilMs: Long = store?.readUntilMs() ?: 0L
 
     /** 连续被拒次数，决定退避档位 */
     @Volatile
-    private var strikes: Long = store?.readLong(KEY_STRIKES, 0L) ?: 0L
+    private var strikes: Long = store?.readStrikes() ?: 0L
 
     /** 已经提示过的那一段冷却。只在内存里，重启后最多再提示一次 */
     @Volatile
@@ -75,10 +79,8 @@ class RateLimitGuard(
         val cooldown = cooldownFor(n)
         strikes = n
         untilMs = clock() + cooldown
-        store?.let {
-            it.writeLong(KEY_STRIKES, n)
-            it.writeLong(KEY_UNTIL, untilMs)
-        }
+        // 档位和期限一次写完：分两次写，中间断电会留下「新档位 + 旧期限」的中间态
+        store?.write(n, untilMs)
         return cooldown
     }
 
@@ -96,7 +98,8 @@ class RateLimitGuard(
         if (isBlocked()) return
         if (strikes == 0L) return
         strikes = 0L
-        store?.writeLong(KEY_STRIKES, 0L)
+        // untilMs 原样写回：它已经过期、靠时间失效，没有别的值要写 —— 顺手保持两个数一致
+        store?.write(0L, untilMs)
     }
 
     /**
@@ -134,9 +137,11 @@ class RateLimitGuard(
     }
 
     private class PrefsStore(private val prefs: SharedPreferences) : RateLimitStore {
-        override fun readLong(key: String, def: Long): Long = prefs.getLong(key, def)
-        override fun writeLong(key: String, value: Long) {
-            prefs.edit().putLong(key, value).apply()
+        override fun readStrikes(): Long = prefs.getLong(KEY_STRIKES, 0L)
+        override fun readUntilMs(): Long = prefs.getLong(KEY_UNTIL, 0L)
+        override fun write(strikes: Long, untilMs: Long) {
+            // 一次 edit：两个数同生共死
+            prefs.edit().putLong(KEY_STRIKES, strikes).putLong(KEY_UNTIL, untilMs).apply()
         }
     }
 
