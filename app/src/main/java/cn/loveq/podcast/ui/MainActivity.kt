@@ -26,6 +26,8 @@ class MainActivity : ComponentActivity() {
 
     private val store by lazy { (application as LoveqApp).progressStore }
 
+    private val updates by lazy { (application as LoveqApp).updates }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         applyHighRefreshRate()
@@ -35,6 +37,9 @@ class MainActivity : ComponentActivity() {
         )
         // 订阅而不是只在 onCreate 读一次：设置里拨动开关要立刻生效，不该要求重启应用
         lifecycleScope.launch { store.immersive.collect(::applyStatusBar) }
+        // 启动静默检查：失败不出声、不写持久状态（见 UpdateCenter.check 的 manual 参数）。
+        // 有新版时设置入口和「关于」行会出现红点，不打断用户收听
+        lifecycleScope.launch { updates.check(manual = false) }
         setContent {
             LoveqTheme {
                 AppScreen(onRequestNotificationPermission = ::requestNotificationPermissionIfNeeded)
