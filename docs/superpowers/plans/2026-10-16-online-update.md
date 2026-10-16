@@ -56,8 +56,22 @@
 
 **文件：**
 - 修改：`app/build.gradle.kts`
+- 修改：`gradle/libs.versions.toml`
 - 修改：`app/src/main/AndroidManifest.xml`
 - 创建：`app/src/main/res/xml/file_paths.xml`
+
+> **执行中补充（2026-10-16，TDD 阶段发现，原计划遗漏）**：任务 4 是第一个在 JVM 单测里用
+> `org.json` 的测试，而 Android 单测跑在 mockable `android.jar` 上 —— `org.json.*` 全是**桩**，
+> 一调用就抛 `RuntimeException: Method optString in org.json.JSONObject not mocked`。
+> 所以本任务要**额外**把真实 `org.json` 挂进测试类路径（只影响单测；设备上仍用系统实现）：
+>
+> - `gradle/libs.versions.toml`：`[versions]` 加 `json = "20240303"`；`[libraries]` 加
+>   `json = { group = "org.json", name = "json", version.ref = "json" }`
+> - `app/build.gradle.kts`：dependencies 里 `testImplementation(libs.junit)` 之后加
+>   `testImplementation(libs.json)`
+>
+> **`testOptions.unitTests.isReturnDefaultValues = true` 不是替代方案**：那会让桩返回 `null`/`0`，
+> `JSONObject(json)` 造出来是空对象，解析会静默失败（不是抛错，更难看懂）。
 
 - [ ] **步骤 1：给 `buildFeatures` 打开 buildConfig**
 
