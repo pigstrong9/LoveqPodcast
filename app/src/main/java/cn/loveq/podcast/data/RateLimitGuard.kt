@@ -32,9 +32,12 @@ interface RateLimitStore {
  * 下次开 App 立刻从断点再抓一次」，用户重启几次就把自己反复钉在封禁里 ——
  * 那已经不是「频繁访问」，而是被拒之后还在继续敲门。
  *
- * 冷却时长按连续被拒次数递增（30min → 6h），任何一次成功立刻清零。
+ * 冷却时长按连续被拒次数递增（30min → 6h），冷却自然失效后第一次成功即清零。
  * 刻意不做随机抖动：稳定的慢节奏是「守规矩」的信号；抖动更像在躲检测，
  * 那是另一码事，不该出现在这里。
+ *
+ * 两个写方法都加了锁：`onResponse` 跑在 OkHttp 的线程池上，而全局闸门串行的是
+ * 请求**发出**、不是**完成**，所以两个并发 405 会基于同一个旧档位各算各的，档位会丢。
  */
 class RateLimitGuard(
     private val store: RateLimitStore?,
@@ -45,13 +48,17 @@ class RateLimitGuard(
         PrefsStore(context.getSharedPreferences("loveq_rate_limit", Context.MODE_PRIVATE))
     )
 
-    /** 冷却到什么时候（epoch ms）。0 表示正常 */
+    /** 冷却到什么时候（epoch ms）。过去的时间点等于没在冷却 */
     @Volatile
     private var untilMs: Long = store?.readLong(KEY_UNTIL, 0L) ?: 0L
 
     /** 连续被拒次数，决定退避档位 */
     @Volatile
     private var strikes: Long = store?.readLong(KEY_STRIKES, 0L) ?: 0L
+
+    /** 已经提示过的那一段冷却。只在内存里，重启后最多再提示一次 */
+    @Volatile
+    private var announcedUntilMs = Long.MIN_VALUE
 
     fun isBlocked(): Boolean = blockedForMs() > 0L
 
@@ -62,6 +69,7 @@ class RateLimitGuard(
      * 被官网拒了一次：进入或延长冷却，并升一档退避。
      * 返回本次冷却时长，调用方可以直接拿去提示用户。
      */
+    @Synchronized
     fun onRateLimited(): Long {
         val n = strikes + 1
         val cooldown = cooldownFor(n)
@@ -74,15 +82,35 @@ class RateLimitGuard(
         return cooldown
     }
 
-    /** 请求成功：冷却立即解除，退避档位归零 */
+    /**
+     * 请求成功。
+     *
+     * 冷却期内**什么都不做**：能走到这里的成功，一定来自冷却开始前就已经在途的请求
+     * （冷却期内根本不发请求）。拿它去撤销刚记下的拒绝，等于被拒之后紧接着说「没事」
+     * 继续敲门 —— 一次成功就能取消的冷却不算冷却。时间到了它自己失效。
+     *
+     * 冷却失效后的第一次成功才清档位，让下次偶发被拒重新从最短冷却起步。
+     */
+    @Synchronized
     fun onSuccess() {
-        if (untilMs == 0L && strikes == 0L) return
+        if (isBlocked()) return
+        if (strikes == 0L) return
         strikes = 0L
-        untilMs = 0L
-        store?.let {
-            it.writeLong(KEY_STRIKES, 0L)
-            it.writeLong(KEY_UNTIL, 0L)
-        }
+        store?.writeLong(KEY_STRIKES, 0L)
+    }
+
+    /**
+     * 这一段冷却是否还没提示过。
+     *
+     * 自动续抓会反复撞同一段冷却，用户也可能连点几下下拉刷新 ——
+     * 同一段冷却只该说一次，否则提示会刷屏。
+     */
+    @Synchronized
+    fun shouldAnnounceCooldown(): Boolean {
+        if (!isBlocked()) return false
+        if (untilMs == announcedUntilMs) return false
+        announcedUntilMs = untilMs
+        return true
     }
 
     /** 剩余冷却时间的中文描述，空串表示没在冷却 */

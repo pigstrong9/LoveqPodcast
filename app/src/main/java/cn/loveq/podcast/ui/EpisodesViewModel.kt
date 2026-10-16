@@ -557,7 +557,12 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                if (loadGen == gen) PlaybackEvents.report("跳转失败，请检查网络")
+                if (loadGen == gen) {
+                    PlaybackEvents.report(
+                        if (e is RateLimitedException) "跳转失败：${rateLimitText()}"
+                        else "跳转失败，请检查网络"
+                    )
+                }
             } finally {
                 if (loadGen == gen) _state.update { it.copy(jumping = false) }
             }

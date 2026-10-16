@@ -50,11 +50,15 @@ class LoveqRepository(private val guard: RateLimitGuard) {
      * 线程会被占满一个完整超时周期，快速切分类/翻页时请求会堆积。
      */
     private suspend fun fetch(url: String): String {
-        // 冷却期内连请求都别发：反正会被拒，发了只会把封禁一次次续上
-        val blocked = guard.blockedForMs()
-        if (blocked > 0L) throw RateLimitedException(CODE_LOCAL_COOLDOWN, url)
+        // 冷却期内一次都不发。这里先查一次是快路径：能直接失败，不必去占闸门的时间槽
+        // —— 凭空占槽会把冷却结束后的第一个请求往后推好几十秒
+        throwIfCooling(url)
 
         awaitTurn()
+
+        // 等槽位这几百毫秒里可能刚落冷却（别的请求刚被拒），再查一次才算把窗口关上。
+        // 漏掉这一个，就正好是「被拒之后还在敲门」的那一下，而且它被拒还会把冷却续长
+        throwIfCooling(url)
 
         return suspendCancellableCoroutine { cont ->
             val request = Request.Builder()
@@ -92,6 +96,11 @@ class LoveqRepository(private val guard: RateLimitGuard) {
                 }
             })
         }
+    }
+
+    /** 冷却期内不发请求：反正会被拒，发了只会把封禁一次次续上 */
+    private fun throwIfCooling(url: String) {
+        if (guard.isBlocked()) throw RateLimitedException(CODE_LOCAL_COOLDOWN, url)
     }
 
     /**

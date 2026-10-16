@@ -36,23 +36,86 @@ class EpisodeIndexStore(context: Context, private val guard: RateLimitGuard) {
     private var pagesDone = 0
     private var totalPagesKnown = 1
 
+    /** 缓存最后落盘时间，用来判断增量刷新还有没有必要 */
+    private var cachedAt = 0L
+
     fun ensureIndex(repository: LoveqRepository) {
         if (buildJob?.isActive == true || _episodes.value.isNotEmpty()) return
+        startIndexing(repository, respectTtl = true)
+    }
+
+    fun refresh(repository: LoveqRepository) {
+        if (buildJob?.isActive == true) {
+            // 推进循环已经在跑（可能正卡在冷却等待里）：给一次反馈，
+            // 但绝不另起一个任务去撞已经被拒的接口
+            if (guard.isBlocked()) announceCooldownOnce()
+            return
+        }
+        startIndexing(repository, respectTtl = false)
+    }
+
+    /**
+     * 索引推进循环。
+     *
+     * 冷却时不是「另排一个新任务」，而是在**同一个 job 里等** —— 这样 buildJob 只有一处
+     * 赋值，不会出现「协程体里改了 buildJob、外面 `buildJob = launch{}` 又覆盖回去」的竞态
+     * （那样会把续抓任务的引用丢掉）。
+     *
+     * 反复被拒也没关系：冷却阶梯 6 小时封顶，一天最多几次请求，是礼貌重试，不是敲门。
+     */
+    private fun startIndexing(repository: LoveqRepository, respectTtl: Boolean) {
         buildJob = scope.launch {
-            // 缓存无论如何都要读进来：冷却意味着「不发请求」，不等于「让搜索空着」
-            val cache = readCache()
-            if (cache == null) {
-                if (guard.isBlocked()) reportBlocked() else buildAll(repository, 1)
-                return@launch
+            var mode = respectTtl
+            while (true) {
+                // null = 这次没事可做了；否则是「等这么久再来」
+                val waitMs = advanceIndex(repository, mode) ?: return@launch
+                delay(waitMs)
+                // 续抓一律按启动语义：这期间索引可能已经完整，不该无条件再刷一次
+                mode = true
             }
-            pagesDone = cache.pagesDone
-            totalPagesKnown = cache.totalPages
-            _episodes.value = cache.episodes
-            if (pagesDone < totalPagesKnown) {
-                if (guard.isBlocked()) reportBlocked() else buildAll(repository, pagesDone + 1)
-            } else if (cache.savedAt < System.currentTimeMillis() - DAY_MS) {
-                if (guard.isBlocked()) reportBlocked() else refreshIncremental(repository)
+        }
+    }
+
+    /**
+     * 推进一轮：先把磁盘缓存读进来，再决定补齐断点 / 增量刷新 / 什么都不做。
+     *
+     * @param respectTtl 启动路径为 true（缓存还新鲜就不刷，这就是「平时零请求」的来源）；
+     *                   下拉刷新为 false（强制走一次增量）
+     * @return 需要等多久再续（官网冷却中）；null 表示这一轮已经没事可做
+     */
+    private suspend fun advanceIndex(repository: LoveqRepository, respectTtl: Boolean): Long? {
+        // 缓存无论如何都要读进来：冷却意味着「不发请求」，不等于「让搜索空着」
+        if (_episodes.value.isEmpty()) {
+            readCache()?.let { cache ->
+                pagesDone = cache.pagesDone
+                totalPagesKnown = cache.totalPages
+                _episodes.value = cache.episodes
+                cachedAt = cache.savedAt
             }
+        }
+
+        // 索引完整又还新鲜：启动时直接收工，一次请求都不发。
+        // 放在冷却检查之前 —— 这种情况本来就无事可做，不该报「索引暂停更新」
+        val incomplete = _episodes.value.isEmpty() || pagesDone < totalPagesKnown
+        if (!incomplete && respectTtl && cachedAt >= System.currentTimeMillis() - DAY_MS) return null
+
+        if (guard.isBlocked()) {
+            announceCooldownOnce()
+            return guard.blockedForMs() + RESUME_MARGIN_MS
+        }
+
+        return try {
+            when {
+                _episodes.value.isEmpty() -> buildAll(repository, 1)
+                pagesDone < totalPagesKnown -> buildAll(repository, pagesDone + 1)
+                else -> refreshIncremental(repository)
+            }
+            null
+        } catch (_: RateLimitedException) {
+            // 被官网拒了：已抓页面都已落盘，剩下的等冷却过了再续。
+            // 必须报出来 —— 静默吞掉会让列表和搜索莫名少一截，用户完全无从判断
+            announceCooldownOnce()
+            guard.blockedForMs() + RESUME_MARGIN_MS
         }
     }
 
@@ -61,35 +124,15 @@ class EpisodeIndexStore(context: Context, private val guard: RateLimitGuard) {
      *
      * 索引不全时分类和搜索都会缺节目；原来的静默跳过会让用户只看到
      * 「列表莫名其妙少了一段」，既不知道该等，也不知道不是应用坏了。
+     *
+     * 同一段冷却只说一次：自动续抓会反复撞它，用户也可能连点几下下拉刷新。
+     * 这里必须真的报出「等多久」——而且外层循环真的会到点续抓，不是空头承诺。
      */
-    private fun reportBlocked() {
+    private fun announceCooldownOnce() {
+        if (!guard.shouldAnnounceCooldown()) return
         PlaybackEvents.report(
             "官网暂时限制了访问，节目索引暂停更新，约 ${guard.describeRemaining()}后自动恢复"
         )
-    }
-
-    fun refresh(repository: LoveqRepository) {
-        if (buildJob?.isActive == true) return
-        buildJob = scope.launch {
-            if (_episodes.value.isEmpty()) {
-                val cache = readCache()
-                if (cache != null) {
-                    pagesDone = cache.pagesDone
-                    totalPagesKnown = cache.totalPages
-                    _episodes.value = cache.episodes
-                }
-            }
-            when {
-                // 冷却期内一次请求都不发：下拉刷新也一样，用户点几下不该让我们
-                // 反复去撞已经被拒绝的接口
-                _episodes.value.isEmpty() ->
-                    if (guard.isBlocked()) reportBlocked() else buildAll(repository, 1)
-                pagesDone < totalPagesKnown ->
-                    if (guard.isBlocked()) reportBlocked() else buildAll(repository, pagesDone + 1)
-                else ->
-                    if (guard.isBlocked()) reportBlocked() else refreshIncremental(repository)
-            }
-        }
     }
 
     private suspend fun buildAll(repository: LoveqRepository, startPage: Int) {
@@ -102,7 +145,7 @@ class EpisodeIndexStore(context: Context, private val guard: RateLimitGuard) {
             var page = startPage
             var sinceFlush = 0
             // 一次会话最多抓这么多页：全量 90 多页一口气打完，本身就是一次明显突发。
-            // 拆成两次（索引先能用上，下次启动再补齐）对官网温和，对用户也没损失
+            // 拆成两次（索引先能用上，下次启动或下拉刷新再补齐）对官网温和，对用户也没损失
             var fetchedThisRun = 0
             while (true) {
                 val result = repository.loadPage(page)
@@ -121,7 +164,7 @@ class EpisodeIndexStore(context: Context, private val guard: RateLimitGuard) {
                 }
                 if (page >= result.totalPages) break
                 if (++fetchedThisRun >= MAX_PAGES_PER_RUN) {
-                    // 本轮到此为止，进度已落盘，下次启动续抓
+                    // 本轮到此为止，进度已落盘，下次启动/下拉刷新续抓
                     writeCache(all, page, result.totalPages)
                     break
                 }
@@ -131,12 +174,8 @@ class EpisodeIndexStore(context: Context, private val guard: RateLimitGuard) {
         } catch (e: CancellationException) {
             throw e
         } catch (e: RateLimitedException) {
-            // 被官网拒了：已抓页面均已落盘，剩下的等冷却过了再说。
-            // 必须报出来 —— 静默吞掉会让列表和搜索莫名少一截，用户完全无从判断
-            PlaybackEvents.report(
-                "官网暂时限制了访问，节目索引暂停更新，" +
-                    "约 ${guard.describeRemaining()}后自动恢复"
-            )
+            // 交给 advanceIndex：由它统一提示 + 排下一次续抓，别在这里各写一份
+            throw e
         } catch (_: Exception) {
             // 已抓页面均已落盘，下次启动自动续抓
         } finally {
@@ -169,11 +208,7 @@ class EpisodeIndexStore(context: Context, private val guard: RateLimitGuard) {
         } catch (e: CancellationException) {
             throw e
         } catch (e: RateLimitedException) {
-            // 增量刷新也会被同一限流拒掉，同样要落冷却、要说出来
-            PlaybackEvents.report(
-                "官网暂时限制了访问，节目索引暂停更新，" +
-                    "约 ${guard.describeRemaining()}后自动恢复"
-            )
+            throw e
         } catch (_: Exception) {
         } finally {
             _loading.value = false
@@ -223,6 +258,7 @@ class EpisodeIndexStore(context: Context, private val guard: RateLimitGuard) {
                 file.delete()
                 tmp.renameTo(file)
             }
+            cachedAt = System.currentTimeMillis()
         } catch (_: Exception) {
         }
     }
@@ -246,5 +282,13 @@ class EpisodeIndexStore(context: Context, private val guard: RateLimitGuard) {
          * 而不是开机头两分钟连打 90 个请求。
          */
         const val MAX_PAGES_PER_RUN = 45
+
+        /**
+         * 到点续抓时多等一会儿再发。
+         *
+         * 贴着冷却结束的瞬间打过去，很容易正好撞在官网那侧的计时器边界上
+         * （我们和它的时钟不可能一致），白吃一次 405 还把冷却升一档。
+         */
+        const val RESUME_MARGIN_MS = 60_000L
     }
 }

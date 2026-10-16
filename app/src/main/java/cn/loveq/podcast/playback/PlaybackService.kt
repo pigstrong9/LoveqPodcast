@@ -539,11 +539,16 @@ class PlaybackService : MediaSessionService() {
         private const val MAX_URL_RETRIES = 2
 
         /**
-         * 直链过期时只要几秒就够，但 405 也走这条重试路径。
-         * 2 秒的退避等于没有退避 —— 对着已经被拒的接口连敲三次只会把封禁续上，
-         * 所以拉到分钟级；配合 2 次上限，最多重试到 2 分钟。
+         * 直链失效后的重取退避。
+         *
+         * 这里**不需要**为了 405 拉长：走这条路径的 4xx 是 ExoPlayer 播 CDN 直链失败
+         * （`dl2.loveq.cn`，和官网 `www.loveq.cn` 不是同一个 host），官网的 405 都在
+         * `LoveqRepository.fetch` 里被 guard 接住、由 resolveAndPlay 直接报掉，到不了这儿。
+         * 而重试本身又会走 fetchAudio，冷却期内它一步就抛 —— 真正的保护在 guard，不在这个值。
+         *
+         * 反过来，把常见的「暂停久了签名过期」从 2 秒拖到 60 秒才是真的伤用户。
          */
-        private const val URL_RETRY_BACKOFF_MS = 60_000L
+        private const val URL_RETRY_BACKOFF_MS = 2_000L
 
         /** 断网/超时这类可以等网络回来自己续上，和「直链过期」要分开处理 */
         private val NETWORK_ERRORS = setOf(
