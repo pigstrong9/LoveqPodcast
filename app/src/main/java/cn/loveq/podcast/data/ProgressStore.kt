@@ -51,6 +51,20 @@ class ProgressStore(context: Context) {
         persist(prefs.edit().putBoolean(KEY_IMMERSIVE, hidden))
     }
 
+    /**
+     * 启动时自动接着上次收听的那期继续播放。
+     *
+     * 默认关：这是「一打开应用就出声」的行为，车机上每次点火都会占用音响，
+     * 得用户明确点头。判断逻辑见 [shouldAutoResume]。
+     */
+    private val _autoResume = MutableStateFlow(prefs.getBoolean(KEY_AUTO_RESUME, false))
+    val autoResume: StateFlow<Boolean> = _autoResume
+
+    fun setAutoResume(on: Boolean) {
+        _autoResume.value = on
+        persist(prefs.edit().putBoolean(KEY_AUTO_RESUME, on))
+    }
+
     init {
         reload()
     }
@@ -184,6 +198,7 @@ class ProgressStore(context: Context) {
         const val KEY_SPEED = "speed"
         const val KEY_BOOST = "boost"
         const val KEY_IMMERSIVE = "immersive"
+        const val KEY_AUTO_RESUME = "auto_resume"
         const val DONE_EPSILON = 30_000L
 
         /**
@@ -211,3 +226,16 @@ internal fun progressIdsToPrune(
     if (keepId != null) keep.add(keepId)
     return done.filter { it.id !in keep }.mapTo(HashSet()) { it.id }
 }
+
+/**
+ * 启动自动续播该不该发生。
+ *
+ * 判断和列表顶部那颗「继续播放」保持一致（见 EpisodeList：`!lastProgress.done` 才显示）：
+ * 那期已经听完就不续 —— 服务里对「听完」的一期是从 **0** 重新播（见
+ * PlaybackService.startAtSavedPosition），于是每次点火都会把上一期从头再放一遍，
+ * 听着就是「它自己乱放」。**界面不提供的事，自动也不做。**
+ *
+ * 纯函数，便于 JVM 单测。
+ */
+internal fun shouldAutoResume(enabled: Boolean, progress: Progress?): Boolean =
+    enabled && progress != null && !progress.done

@@ -200,6 +200,8 @@ internal fun SettingsDialog(
     downloads: List<DownloadManager.Entry>,
     immersive: Boolean,
     onImmersiveChange: (Boolean) -> Unit,
+    autoResume: Boolean,
+    onAutoResumeChange: (Boolean) -> Unit,
     onRemove: (Long) -> Unit,
     onRetry: (Long) -> Unit,
     onCleared: () -> Unit,
@@ -241,6 +243,23 @@ internal fun SettingsDialog(
                         "手机和平板建议关闭，才能一直看到时间和通知图标。",
                     checked = immersive,
                     onChange = onImmersiveChange
+                )
+
+                Spacer(Modifier.height(22.dp))
+
+                // ---- 播放 ----
+                Text(
+                    "播放",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = AppColors.Muted
+                )
+                Spacer(Modifier.height(10.dp))
+                SwitchRow(
+                    title = "启动自动续播",
+                    subtitle = "打开应用就接着上次收听的那期继续播放，不用再点一次「继续播放」。" +
+                        "那期已经听完则不续；不需要一上车就出声时关掉它。",
+                    checked = autoResume,
+                    onChange = onAutoResumeChange
                 )
 
                 Spacer(Modifier.height(22.dp))

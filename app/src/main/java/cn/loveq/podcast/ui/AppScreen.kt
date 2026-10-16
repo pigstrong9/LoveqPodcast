@@ -91,6 +91,7 @@ fun AppScreen(
     val metaTitle by viewModel.nowTitle.collectAsStateWithLifecycle()
     val metaDate by viewModel.nowDate.collectAsStateWithLifecycle()
     val immersive by viewModel.immersive.collectAsStateWithLifecycle()
+    val autoResume by viewModel.autoResume.collectAsStateWithLifecycle()
 
     val lastProgress = lastId?.let { progressMap[it] }
 
@@ -449,6 +450,8 @@ fun AppScreen(
             downloads = downloads,
             immersive = immersive,
             onImmersiveChange = viewModel::setImmersive,
+            autoResume = autoResume,
+            onAutoResumeChange = viewModel::setAutoResume,
             onRemove = viewModel::removeOffline,
             onRetry = viewModel::retryOffline,
             onCleared = { cacheTick++ },

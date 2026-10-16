@@ -21,6 +21,30 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
+/**
+ * 启动自动续播该走哪条路。
+ *
+ * 抽成纯函数是因为这里有个**容易做错、错了又很难察觉**的点：服务里可能已经装着队列
+ * （用户按了返回键退出界面、音乐还在放），此时若照着「继续播放」重建队列，
+ * 位置会退回上一次落盘点（最多十几秒），听着就是「节目自己往回跳」。
+ */
+internal enum class LaunchResume {
+    /** 用户已经点过播：自动行为让开，什么都不做 */
+    Skip,
+
+    /** 服务里已经有队列：只在暂停时接着播，绝不重建 */
+    Continue,
+
+    /** 服务里没有内容：按上次收听的那期起播 */
+    StartFresh
+}
+
+internal fun launchResumeAction(playRequested: Boolean, hasQueue: Boolean): LaunchResume = when {
+    playRequested -> LaunchResume.Skip
+    hasQueue -> LaunchResume.Continue
+    else -> LaunchResume.StartFresh
+}
+
 class PlayerConnection(context: Context) {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -35,6 +59,12 @@ class PlayerConnection(context: Context) {
     val speed = MutableStateFlow(1.0f)
     val nowTitle = MutableStateFlow<String?>(null)
     val nowDate = MutableStateFlow<String?>(null)
+
+    /** 与服务连上、并且已同步过一次状态（[refreshStaticState]）。见 [resumeOnLaunch] */
+    val connected = MutableStateFlow(false)
+
+    /** 连上后执行一次的动作，见 [resumeOnLaunch] */
+    private var onConnected: (() -> Unit)? = null
 
     private val controllerFuture: ListenableFuture<MediaController> = MediaController.Builder(
         appContext,
@@ -53,10 +83,14 @@ class PlayerConnection(context: Context) {
                 controller = c
                 c.addListener(listener)
                 refreshStaticState()
+                // 自动续播要在 pendingPlay 之前跑：用户已经点下的播，优先于自动行为
+                onConnected?.let { it() }
+                onConnected = null
                 pendingPlay?.let { (episodes, index) ->
                     pendingPlay = null
                     doPlayQueue(episodes, index)
                 }
+                connected.value = true
             },
             ContextCompat.getMainExecutor(appContext)
         )
@@ -96,6 +130,29 @@ class PlayerConnection(context: Context) {
             SessionCommand(PlaybackService.CMD_PLAY_QUEUE, Bundle.EMPTY),
             args
         )
+    }
+
+    /**
+     * 启动自动续播：等服务连上后，按**服务里的实际情况**接续（开关见 ProgressStore.autoResume）。
+     *
+     * 为什么不直接照着「继续播放」重建队列：服务里可能已经装着队列 ——
+     * 用户按返回键退出界面但音乐还在放，再点开应用时若重建队列，位置会退回上一次落盘点
+     * （最多十几秒），听着就是「节目自己往回跳」。所以：
+     * · 用户已经点过播（连上之前点的）→ 什么都不做，手比自动优先
+     * · 服务里已经有内容 → 只在暂停时接着播，绝不动队列
+     * · 服务刚起来没内容 → 交给 [startFresh] 决定起播哪一期
+     *
+     * @param startFresh 服务里没有内容时怎么起播
+     */
+    fun resumeOnLaunch(startFresh: () -> Unit) {
+        val act: () -> Unit = {
+            when (launchResumeAction(pendingPlay != null, mediaId.value != null)) {
+                LaunchResume.Skip -> Unit
+                LaunchResume.Continue -> if (!isPlaying.value) controller?.play()
+                LaunchResume.StartFresh -> startFresh()
+            }
+        }
+        if (connected.value) act() else onConnected = act
     }
 
     fun togglePlayPause() {

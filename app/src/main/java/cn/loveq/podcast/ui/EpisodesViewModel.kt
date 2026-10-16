@@ -10,6 +10,7 @@ import cn.loveq.podcast.data.LoveqParser
 import cn.loveq.podcast.data.PageResult
 import cn.loveq.podcast.data.Progress
 import cn.loveq.podcast.data.RateLimitedException
+import cn.loveq.podcast.data.shouldAutoResume
 import cn.loveq.podcast.playback.PlaybackEvents
 import cn.loveq.podcast.playback.PlayerConnection
 import cn.loveq.podcast.playback.VolumeBoost
@@ -88,6 +89,11 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setImmersive(hidden: Boolean) = store.setImmersive(hidden)
 
+    /** 启动时是否自动续播上次收听的那期 */
+    val autoResume: StateFlow<Boolean> = store.autoResume
+
+    fun setAutoResume(on: Boolean) = store.setAutoResume(on)
+
     fun setBoost(percent: Int) {
         VolumeBoost.apply(percent)
         store.boostPercent = percent
@@ -106,6 +112,21 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
     init {
         loveqApp.indexStore.ensureIndex(repo)
         loadInitial()
+        autoResumeOnLaunch()
+    }
+
+    /**
+     * 启动自动续播（设置里可关，默认关）。
+     *
+     * 两处讲究：
+     * · 只在 ViewModel 构造时决定这一次 —— ViewModel 随 Activity 存活，转屏、切后台回来
+     *   都不会重放，只有用户真的重新打开应用（Activity 重建）才再来一次。
+     * · 判断与起播交给 [PlayerConnection.resumeOnLaunch]：要等服务连上才知道服务里
+     *   是不是已经有队列，否则会把正在听的节目重建一遍、位置退回上次落盘点。
+     */
+    private fun autoResumeOnLaunch() {
+        if (!shouldAutoResume(store.autoResume.value, store.lastId.value?.let(store::get))) return
+        connection.resumeOnLaunch { resumeLast() }
     }
 
     fun switchCategory(category: Category) {
