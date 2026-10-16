@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -98,6 +99,7 @@ fun Sidebar(
     onSearch: () -> Unit,
     onCache: () -> Unit,
     cacheLabel: String?,
+    showUpdateDot: Boolean,
     topInset: WindowInsets,
     modifier: Modifier = Modifier
 ) {
@@ -150,7 +152,7 @@ fun Sidebar(
             // 年份入口挪进了列表（点年份数字），侧栏不再常驻一个「年份」按钮
             // 页面里除了缓存还有显示设置，入口叫「设置」；
             // 占用容量下面那行 cacheLabel 常驻，缓存信息并没有因此变难找
-            SideTool(Icons.Filled.Settings, "设置", onCache)
+            SideTool(Icons.Filled.Settings, "设置", onCache, dot = showUpdateDot)
         }
         Text(
             cacheLabel ?: "缓存统计中…",
@@ -219,6 +221,7 @@ private fun SideTool(
     icon: ImageVector,
     label: String,
     onClick: () -> Unit,
+    dot: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     Row(
@@ -231,12 +234,17 @@ private fun SideTool(
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(
-            icon,
-            contentDescription = null,
-            tint = AppColors.Body,
-            modifier = Modifier.size(21.dp)
-        )
+        Box {
+            Icon(
+                icon,
+                contentDescription = null,
+                tint = AppColors.Body,
+                modifier = Modifier.size(21.dp)
+            )
+            if (dot) {
+                UpdateDot(Modifier.align(Alignment.TopEnd).offset(x = 3.dp, y = (-3).dp))
+            }
+        }
         Spacer(Modifier.width(12.dp))
         Text(
             label,
@@ -252,6 +260,7 @@ private fun SideTool(
 fun PhoneHeader(
     onSearch: () -> Unit,
     onCache: () -> Unit,
+    showUpdateDot: Boolean,
     topInset: WindowInsets,
     modifier: Modifier = Modifier
 ) {
@@ -268,7 +277,7 @@ fun PhoneHeader(
         BrandTitle("FM97.4 珠江经济台", Modifier.weight(1f))
         IconTool(Icons.Filled.Search, "搜索", onSearch)
         // 年份入口挪进了列表本体（点年份数字），顶栏不再常驻一个日历按钮
-        IconTool(Icons.Filled.Settings, "设置", onCache)
+        IconTool(Icons.Filled.Settings, "设置", onCache, dot = showUpdateDot)
     }
 }
 
@@ -328,7 +337,12 @@ fun CategoryPills(
 }
 
 @Composable
-private fun IconTool(icon: ImageVector, contentDescription: String, onClick: () -> Unit) {
+private fun IconTool(
+    icon: ImageVector,
+    contentDescription: String,
+    onClick: () -> Unit,
+    dot: Boolean = false
+) {
     Box(
         Modifier
             .padding(start = 6.dp)
@@ -339,6 +353,9 @@ private fun IconTool(icon: ImageVector, contentDescription: String, onClick: () 
         contentAlignment = Alignment.Center
     ) {
         Icon(icon, contentDescription = contentDescription, tint = AppColors.Body, modifier = Modifier.size(20.dp))
+        if (dot) {
+            UpdateDot(Modifier.align(Alignment.TopEnd).offset(x = (-8).dp, y = 8.dp))
+        }
     }
 }
 

@@ -45,6 +45,7 @@ import cn.loveq.podcast.data.Category
 import cn.loveq.podcast.data.DownloadManager
 import cn.loveq.podcast.data.Episode
 import cn.loveq.podcast.data.Progress
+import cn.loveq.podcast.data.UpdateStatus
 import cn.loveq.podcast.playback.MediaCache
 import cn.loveq.podcast.playback.PlaybackEvents
 import kotlinx.coroutines.Dispatchers
@@ -92,6 +93,9 @@ fun AppScreen(
     val metaDate by viewModel.nowDate.collectAsStateWithLifecycle()
     val immersive by viewModel.immersive.collectAsStateWithLifecycle()
     val autoResume by viewModel.autoResume.collectAsStateWithLifecycle()
+    val updateStatus by viewModel.updateStatus.collectAsStateWithLifecycle()
+    val currentVersion = remember { viewModel.currentVersionName() }
+    val showUpdateDot = updateStatus is UpdateStatus.Available
 
     val lastProgress = lastId?.let { progressMap[it] }
 
@@ -224,6 +228,7 @@ fun AppScreen(
                             cacheLabel = cacheBytes?.let {
                                 "缓存 ${formatSize(it)} · 上限 ${formatSize(MediaCache.capBytes)}"
                             },
+                            showUpdateDot = showUpdateDot,
                             topInset = topInset,
                             modifier = Modifier.width(sidebarWidth)
                         )
@@ -312,6 +317,7 @@ fun AppScreen(
                     PhoneHeader(
                         onSearch = { searchOpen = true },
                         onCache = { settingsOpen = true },
+                        showUpdateDot = showUpdateDot,
                         topInset = topInset
                     )
                     CategoryPills(
@@ -452,6 +458,13 @@ fun AppScreen(
             onImmersiveChange = viewModel::setImmersive,
             autoResume = autoResume,
             onAutoResumeChange = viewModel::setAutoResume,
+            updateStatus = updateStatus,
+            currentVersion = currentVersion,
+            onCheckUpdate = viewModel::checkUpdate,
+            onDownloadAndInstall = viewModel::downloadAndInstallUpdate,
+            onInstallPending = viewModel::installPendingUpdate,
+            onOpenReleasePage = viewModel::openReleasePage,
+            onRequestUnknownSources = viewModel::unknownSourcesIntent,
             onRemove = viewModel::removeOffline,
             onRetry = viewModel::retryOffline,
             onCleared = { cacheTick++ },

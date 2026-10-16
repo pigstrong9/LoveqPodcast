@@ -54,6 +54,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import cn.loveq.podcast.data.DownloadManager
+import cn.loveq.podcast.data.UpdateStatus
 import cn.loveq.podcast.playback.MediaCache
 import cn.loveq.podcast.ui.theme.AppColors
 import java.util.Calendar
@@ -202,6 +203,13 @@ internal fun SettingsDialog(
     onImmersiveChange: (Boolean) -> Unit,
     autoResume: Boolean,
     onAutoResumeChange: (Boolean) -> Unit,
+    updateStatus: UpdateStatus,
+    currentVersion: String,
+    onCheckUpdate: () -> Unit,
+    onDownloadAndInstall: () -> Unit,
+    onInstallPending: () -> Unit,
+    onOpenReleasePage: () -> Unit,
+    onRequestUnknownSources: () -> android.content.Intent?,
     onRemove: (Long) -> Unit,
     onRetry: (Long) -> Unit,
     onCleared: () -> Unit,
@@ -372,6 +380,25 @@ internal fun SettingsDialog(
 
                 Spacer(Modifier.height(22.dp))
 
+                // ---- 更新 ----
+                Text(
+                    "更新",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = AppColors.Muted
+                )
+                Spacer(Modifier.height(10.dp))
+                UpdateSection(
+                    status = updateStatus,
+                    currentVersion = currentVersion,
+                    onCheck = onCheckUpdate,
+                    onDownloadAndInstall = onDownloadAndInstall,
+                    onInstallPending = onInstallPending,
+                    onOpenReleasePage = onOpenReleasePage,
+                    onRequestUnknownSources = onRequestUnknownSources
+                )
+
+                Spacer(Modifier.height(22.dp))
+
                 // ---- 关于 ----
                 Text(
                     "关于",
@@ -379,12 +406,24 @@ internal fun SettingsDialog(
                     color = AppColors.Muted
                 )
                 Spacer(Modifier.height(10.dp))
-                TextButton(onClick = { aboutOpen = true }) {
-                    Text(
-                        "非官方声明与联系方式",
-                        color = AppColors.Red,
-                        fontWeight = FontWeight.Bold
-                    )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = { aboutOpen = true }) {
+                        Text(
+                            "非官方声明与联系方式",
+                            color = AppColors.Red,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                    if (updateStatus is UpdateStatus.Available) {
+                        Spacer(Modifier.width(6.dp))
+                        UpdateDot()
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            "可更新",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = AppColors.RedDeep
+                        )
+                    }
                 }
             }
         },

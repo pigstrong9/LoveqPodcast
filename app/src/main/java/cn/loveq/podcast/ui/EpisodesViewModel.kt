@@ -61,6 +61,22 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
     private val repo = loveqApp.repository
     private val store = loveqApp.progressStore
 
+    /** 在线升级的状态与动作。放在这里而不是直接让界面拿 LoveqApp：
+         跟 immersive / autoResume 一样，界面只跟 ViewModel 打交道 */
+    val updateStatus = loveqApp.updates.status
+
+    fun checkUpdate() = loveqApp.updates.check(manual = true)
+
+    fun downloadAndInstallUpdate() = loveqApp.updates.downloadAndInstall()
+
+    fun installPendingUpdate() = loveqApp.updates.installPending()
+
+    fun currentVersionName(): String = loveqApp.updates.currentVersionName()
+
+    fun openReleasePage() = loveqApp.updates.openReleasePage()
+
+    fun unknownSourcesIntent() = loveqApp.updates.unknownSourcesIntent()
+
     val connection = PlayerConnection(app)
     val progressMap: StateFlow<Map<Long, Progress>> = store.progressMap
     val lastId: StateFlow<Long?> = store.lastId
