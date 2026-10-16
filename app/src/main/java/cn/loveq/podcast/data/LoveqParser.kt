@@ -69,12 +69,17 @@ object LoveqParser {
     /**
      * 从分页链接里取页码。
      *
-     * 「全部节目」（cat_id=0）的分页链接**不带** cat_id，形如 `program.html?&page=2`；
-     * 其余分类才是 `program.html?cat_id=N&page=2`。早先只认带 cat_id 的那种，
+     * 各分类的分页链接是 `program.html?cat_id=N&page=2`；唯独「全部节目」（cat_id=0）
+     * 不带 cat_id，形如 `program.html?&page=2`。早先只认带 cat_id 的那种，
      * 结果「全部节目」这一档的 totalPages 永远算成 1：只能停在第一页，跳年份也失效。
-     * 所以 cat_id 前缀做成可选的，两种形式都要认。
+     *
+     * 只对 cat_id=0 放宽成「任何位置带 page= 的参数」（`[?&]` 顺带挡掉 `mypage=` 这类误匹配）；
+     * 其余分类仍按 cat_id 精确匹配 —— 全局放宽的话，cat_id=0 页面上别处
+     * （年份筛选、跨分类入口）的 page= 链接会把总页数带偏。
      */
-    private fun pageParamOf(catId: Int): Regex = Regex("""(?:cat_id=$catId&)?page=(\d+)""")
+    private fun pageParamOf(catId: Int): Regex =
+        if (catId == 0) Regex("""[?&]page=(\d+)""")
+        else Regex("""cat_id=$catId&page=(\d+)""")
 
     /**
      * 音频后缀判定不分大小写。

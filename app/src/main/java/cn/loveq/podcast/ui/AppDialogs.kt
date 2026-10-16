@@ -195,6 +195,7 @@ private fun DateChip(label: String, selected: Boolean, onClick: () -> Unit) {
 @Composable
 internal fun SettingsDialog(
     cacheBytes: Long?,
+    cacheCapBytes: Long,
     downloads: List<DownloadManager.Entry>,
     immersive: Boolean,
     onImmersiveChange: (Boolean) -> Unit,
@@ -206,8 +207,8 @@ internal fun SettingsDialog(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var clearing by remember { mutableStateOf(false) }
-    // 上限是启动时按可用空间算定的，取一次就够（拿不到时退回硬上限 2GB）
-    val cacheCap = formatSize(MediaCache.capBytes)
+    // 上限由调用方传入：首次 get() 时按可用空间算定，拿不到时退回硬上限 2GB
+    val cacheCap = formatSize(cacheCapBytes)
 
     DialogHost(
         onDismiss = onDismiss,

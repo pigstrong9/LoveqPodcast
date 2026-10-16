@@ -152,18 +152,16 @@ fun AppScreen(
         onOfflineSelected = offlineSelected
     )
 
-    // 边栏要常驻显示缓存占用：清理后、打开设置时立即重算，再加一条低频轮询——
-    // 播放中缓存会边听边增长，只算一次的话这个数字永远停在启动那一刻
+    // 边栏要常驻显示缓存占用：清理后、打开设置时立即重算，其余时间低频轮询——
+    // 播放中缓存会边听边增长，只算一次的话这个数字永远停在启动那一刻。
+    // 一个 effect 兼管两件事：key 变化会重启循环，于是先立即重算、再进入轮询
     val context = LocalContext.current
     var cacheBytes by remember { mutableStateOf<Long?>(null) }
     var cacheTick by remember { mutableIntStateOf(0) }
     LaunchedEffect(cacheTick, settingsOpen) {
-        cacheBytes = withContext(Dispatchers.IO) { MediaCache.sizeBytes(context) }
-    }
-    LaunchedEffect(Unit) {
         while (true) {
-            delay(CACHE_POLL_MS)
             cacheBytes = withContext(Dispatchers.IO) { MediaCache.sizeBytes(context) }
+            delay(CACHE_POLL_MS)
         }
     }
 
@@ -446,6 +444,8 @@ fun AppScreen(
     if (settingsOpen) {
         SettingsDialog(
             cacheBytes = cacheBytes,
+            // 上限在首次 get() 时按可用空间算定后就不再变，这里直接读那份快照
+            cacheCapBytes = MediaCache.capBytes,
             downloads = downloads,
             immersive = immersive,
             onImmersiveChange = viewModel::setImmersive,
