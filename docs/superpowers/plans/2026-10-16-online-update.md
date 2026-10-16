@@ -352,7 +352,7 @@ internal object VersionTags {
 ./gradlew :app:testDebugUnitTest --offline --console=plain --tests "cn.loveq.podcast.data.VersionTagsTest"
 ```
 
-预期：`BUILD SUCCESSFUL`，9 个测试全过。
+预期：`BUILD SUCCESSFUL`，8 个测试全过。
 
 - [ ] **步骤 5：Commit**
 
@@ -573,7 +573,7 @@ internal class PrefsSourceMemory(context: Context) : SourceMemory {
 ./gradlew :app:testDebugUnitTest --offline --console=plain --tests "cn.loveq.podcast.data.UpdateSourcesTest"
 ```
 
-预期：`BUILD SUCCESSFUL`，9 个测试全过。
+预期：`BUILD SUCCESSFUL`，8 个测试全过。
 
 - [ ] **步骤 5：Commit**
 
