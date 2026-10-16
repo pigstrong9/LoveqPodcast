@@ -7,15 +7,14 @@ import cn.loveq.podcast.LoveqApp
 import cn.loveq.podcast.data.Category
 import cn.loveq.podcast.data.Episode
 import cn.loveq.podcast.data.LoveqParser
-import cn.loveq.podcast.data.LoveqRepository
 import cn.loveq.podcast.data.PageResult
 import cn.loveq.podcast.data.Progress
+import cn.loveq.podcast.data.RateLimitedException
 import cn.loveq.podcast.playback.PlaybackEvents
 import cn.loveq.podcast.playback.PlayerConnection
 import cn.loveq.podcast.playback.VolumeBoost
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -242,7 +241,11 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
                         _state.update {
                             it.copy(
                                 initialLoading = false,
-                                error = "加载失败：${e.message ?: "网络异常"}"
+                                error = if (e is RateLimitedException) {
+                                    rateLimitText()
+                                } else {
+                                    "加载失败：${e.message ?: "网络异常"}"
+                                }
                             ).withoutFilter(clearFilter)
                         }
                     }
@@ -310,10 +313,22 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: Exception) {
                 if (loadGen != gen) return@launch
                 _state.update { it.copy(refreshing = false, initialLoading = false) }
-                PlaybackEvents.report("刷新失败，请检查网络")
+                PlaybackEvents.report(
+                    if (e is RateLimitedException) "刷新失败：${rateLimitText()}"
+                    else "刷新失败，请检查网络"
+                )
             }
         }
     }
+
+    /**
+     * 被官网限流时的统一说辞。
+     *
+     * 这类失败最容易被误读成「你网络有问题」——用户于是去重启路由器、换 4G，
+     * 而实际上什么都做不了，只能等。所以要说清是「等」，不是「修」。
+     */
+    private fun rateLimitText(): String =
+        "官网限制了访问，约 ${loveqApp.rateLimitGuard.describeRemaining()}后自动恢复"
 
     fun loadNextPage() {
         val s = _state.value
@@ -372,6 +387,8 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
                 throw e
             } catch (e: Exception) {
                 if (loadGen == gen) _state.update { it.copy(loadingDown = false, loadMoreError = true) }
+                // 页脚那个「加载失败，点此重试」对限流是误导：点多少次都还是失败
+                if (e is RateLimitedException) PlaybackEvents.report(rateLimitText())
             }
         }
     }
@@ -459,10 +476,11 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
                     if (hit.totalPages != totalPages) totalPages = hit.totalPages
                     return hit
                 }
+                // 这里不再额外 sleep：二分最多 7 次请求，而且用户正盯着屏幕等结果。
+                // 请求间隔交给 LoveqRepository 里的全局闸门统一兜底，够客气了
                 return repo.loadPage(p, catId).also { r ->
                     cache(catId, p, r)
                     if (r.totalPages != totalPages) totalPages = r.totalPages
-                    delay(LoveqRepository.REQUEST_DELAY_MS)
                 }
             }
             try {

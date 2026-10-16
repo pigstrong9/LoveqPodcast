@@ -1,6 +1,7 @@
 package cn.loveq.podcast.data
 
 import android.content.Context
+import cn.loveq.podcast.playback.PlaybackEvents
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -20,7 +21,7 @@ import java.io.FileOutputStream
  * 首次启动后台抓全部页面并缓存到磁盘；之后增量刷新——新节目只出现在前几页，
  * 遇到整页已知即停，通常只需 1 次请求。
  */
-class EpisodeIndexStore(context: Context) {
+class EpisodeIndexStore(context: Context, private val guard: RateLimitGuard) {
 
     private val file = File(context.filesDir, "episode_index.json")
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -38,20 +39,33 @@ class EpisodeIndexStore(context: Context) {
     fun ensureIndex(repository: LoveqRepository) {
         if (buildJob?.isActive == true || _episodes.value.isNotEmpty()) return
         buildJob = scope.launch {
+            // 缓存无论如何都要读进来：冷却意味着「不发请求」，不等于「让搜索空着」
             val cache = readCache()
             if (cache == null) {
-                buildAll(repository, 1)
+                if (guard.isBlocked()) reportBlocked() else buildAll(repository, 1)
                 return@launch
             }
             pagesDone = cache.pagesDone
             totalPagesKnown = cache.totalPages
             _episodes.value = cache.episodes
             if (pagesDone < totalPagesKnown) {
-                buildAll(repository, pagesDone + 1)
+                if (guard.isBlocked()) reportBlocked() else buildAll(repository, pagesDone + 1)
             } else if (cache.savedAt < System.currentTimeMillis() - DAY_MS) {
-                refreshIncremental(repository)
+                if (guard.isBlocked()) reportBlocked() else refreshIncremental(repository)
             }
         }
+    }
+
+    /**
+     * 冷却期内说一声。
+     *
+     * 索引不全时分类和搜索都会缺节目；原来的静默跳过会让用户只看到
+     * 「列表莫名其妙少了一段」，既不知道该等，也不知道不是应用坏了。
+     */
+    private fun reportBlocked() {
+        PlaybackEvents.report(
+            "官网暂时限制了访问，节目索引暂停更新，约 ${guard.describeRemaining()}后自动恢复"
+        )
     }
 
     fun refresh(repository: LoveqRepository) {
@@ -66,9 +80,14 @@ class EpisodeIndexStore(context: Context) {
                 }
             }
             when {
-                _episodes.value.isEmpty() -> buildAll(repository, 1)
-                pagesDone < totalPagesKnown -> buildAll(repository, pagesDone + 1)
-                else -> refreshIncremental(repository)
+                // 冷却期内一次请求都不发：下拉刷新也一样，用户点几下不该让我们
+                // 反复去撞已经被拒绝的接口
+                _episodes.value.isEmpty() ->
+                    if (guard.isBlocked()) reportBlocked() else buildAll(repository, 1)
+                pagesDone < totalPagesKnown ->
+                    if (guard.isBlocked()) reportBlocked() else buildAll(repository, pagesDone + 1)
+                else ->
+                    if (guard.isBlocked()) reportBlocked() else refreshIncremental(repository)
             }
         }
     }
@@ -82,6 +101,9 @@ class EpisodeIndexStore(context: Context) {
             val seen = all.mapTo(HashSet<Long>(all.size * 2)) { it.id }
             var page = startPage
             var sinceFlush = 0
+            // 一次会话最多抓这么多页：全量 90 多页一口气打完，本身就是一次明显突发。
+            // 拆成两次（索引先能用上，下次启动再补齐）对官网温和，对用户也没损失
+            var fetchedThisRun = 0
             while (true) {
                 val result = repository.loadPage(page)
                 totalPagesKnown = result.totalPages
@@ -98,11 +120,23 @@ class EpisodeIndexStore(context: Context) {
                     sinceFlush = 0
                 }
                 if (page >= result.totalPages) break
+                if (++fetchedThisRun >= MAX_PAGES_PER_RUN) {
+                    // 本轮到此为止，进度已落盘，下次启动续抓
+                    writeCache(all, page, result.totalPages)
+                    break
+                }
                 page++
-                delay(LoveqRepository.REQUEST_DELAY_MS)
+                delay(LoveqRepository.CRAWL_DELAY_MS)
             }
         } catch (e: CancellationException) {
             throw e
+        } catch (e: RateLimitedException) {
+            // 被官网拒了：已抓页面均已落盘，剩下的等冷却过了再说。
+            // 必须报出来 —— 静默吞掉会让列表和搜索莫名少一截，用户完全无从判断
+            PlaybackEvents.report(
+                "官网暂时限制了访问，节目索引暂停更新，" +
+                    "约 ${guard.describeRemaining()}后自动恢复"
+            )
         } catch (_: Exception) {
             // 已抓页面均已落盘，下次启动自动续抓
         } finally {
@@ -123,7 +157,7 @@ class EpisodeIndexStore(context: Context) {
                 if (result.episodes.all { it.id in oldIds }) break
                 fetched += result.episodes.filter { it.id !in oldIds }
                 page++
-                delay(LoveqRepository.REQUEST_DELAY_MS)
+                delay(LoveqRepository.CRAWL_DELAY_MS)
             }
             if (fetched.isNotEmpty()) {
                 val fetchedIds = fetched.mapTo(HashSet()) { it.id }
@@ -134,6 +168,12 @@ class EpisodeIndexStore(context: Context) {
             }
         } catch (e: CancellationException) {
             throw e
+        } catch (e: RateLimitedException) {
+            // 增量刷新也会被同一限流拒掉，同样要落冷却、要说出来
+            PlaybackEvents.report(
+                "官网暂时限制了访问，节目索引暂停更新，" +
+                    "约 ${guard.describeRemaining()}后自动恢复"
+            )
         } catch (_: Exception) {
         } finally {
             _loading.value = false
@@ -199,5 +239,12 @@ class EpisodeIndexStore(context: Context) {
 
         /** 攒够这么多页才落一次盘（末页必写）；断电容忍度见 buildAll 里的注释 */
         const val CACHE_FLUSH_EVERY = 5
+
+        /**
+         * 单次会话的最大抓取页数。全量约 90 多页，45 页意味着一个全新安装
+         * 分两次把索引建完（中间那次启动就能搜到一半的节目），
+         * 而不是开机头两分钟连打 90 个请求。
+         */
+        const val MAX_PAGES_PER_RUN = 45
     }
 }

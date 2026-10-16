@@ -34,6 +34,8 @@ import cn.loveq.podcast.R
 import cn.loveq.podcast.data.AudioParseException
 import cn.loveq.podcast.data.Episode
 import cn.loveq.podcast.data.EpisodeAudio
+import cn.loveq.podcast.data.LoveqRepository
+import cn.loveq.podcast.data.RateLimitedException
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import kotlinx.coroutines.CancellationException
@@ -83,7 +85,10 @@ class PlaybackService : MediaSessionService() {
         val cachingFactory = CacheDataSource.Factory()
             .setCache(cache)
             .setCacheKeyFactory(CacheKeyFactory { dataSpec -> MediaCache.keyOf(dataSpec.uri) })
-            .setUpstreamDataSourceFactory(DefaultHttpDataSource.Factory())
+            .setUpstreamDataSourceFactory(
+                // 音频流也要带 UA：CDN 带防盗链时，裸 ExoPlayer/OkHttp 的 UA 会被拒
+                DefaultHttpDataSource.Factory().setUserAgent(LoveqRepository.USER_AGENT)
+            )
             .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
         // 包一层按 scheme 分流：http(s) 走带缓存的上游，file:// 直接走本地文件
         // （离线缓存好的整集不再需要签名直链，没网也能播）
@@ -309,10 +314,14 @@ class PlaybackService : MediaSessionService() {
                 // 只会让人跑去官网发现一切正常，却查不出是解析规则的问题
                 val label = episode.date.ifBlank { episode.title.ifBlank { "本期节目" } }
                 PlaybackEvents.report(
-                    if (e is AudioParseException) {
-                        "《$label》取不到音频地址，应用解析规则需要更新"
-                    } else {
-                        "《$label》加载失败，请检查网络后重试"
+                    when {
+                        // 被官网限流：冷却期内再抓也还是失败，提示要说清是"等"而不是"修"
+                        e is RateLimitedException ->
+                            "《$label》暂时无法播放：官网限制了访问，" +
+                                "约 ${app.rateLimitGuard.describeRemaining()}后自动恢复"
+                        e is AudioParseException ->
+                            "《$label》取不到音频地址，应用解析规则需要更新"
+                        else -> "《$label》加载失败，请检查网络后重试"
                     }
                 )
             }
@@ -528,7 +537,13 @@ class PlaybackService : MediaSessionService() {
         private const val SAVE_INTERVAL_MS = 5_000L
         private const val RESUME_EPSILON_MS = 30_000L
         private const val MAX_URL_RETRIES = 2
-        private const val URL_RETRY_BACKOFF_MS = 2_000L
+
+        /**
+         * 直链过期时只要几秒就够，但 405 也走这条重试路径。
+         * 2 秒的退避等于没有退避 —— 对着已经被拒的接口连敲三次只会把封禁续上，
+         * 所以拉到分钟级；配合 2 次上限，最多重试到 2 分钟。
+         */
+        private const val URL_RETRY_BACKOFF_MS = 60_000L
 
         /** 断网/超时这类可以等网络回来自己续上，和「直链过期」要分开处理 */
         private val NETWORK_ERRORS = setOf(

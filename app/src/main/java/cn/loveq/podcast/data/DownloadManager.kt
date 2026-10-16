@@ -197,7 +197,11 @@ class DownloadManager(context: Context, private val repository: LoveqRepository)
         val part = File(dir, "${episode.id}.mp3.part")
         try {
             val audio = repository.fetchAudio(episode.id)
-            val request = Request.Builder().url(audio.url).build()
+            // CDN 直链同样要带 UA：裸 OkHttp UA 在带防盗链的 CDN 上会被当成异常客户端
+            val request = Request.Builder()
+                .url(audio.url)
+                .header("User-Agent", LoveqRepository.USER_AGENT)
+                .build()
             client.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) throw IOException("HTTP ${response.code}")
                 val body = response.body ?: throw IOException("空响应")
@@ -237,7 +241,14 @@ class DownloadManager(context: Context, private val repository: LoveqRepository)
                 throw e
             }
             updateEntry(episode.id) { it.copy(state = State.FAILED) }
-            PlaybackEvents.report("《${episode.date}》离线缓存失败，可点重试")
+            // 被限流和普通失败要分开说：前者点重试没用，得等冷却过去
+            PlaybackEvents.report(
+                if (e is RateLimitedException) {
+                    "《${episode.date}》离线缓存失败：官网暂时限制了访问，请稍后再试"
+                } else {
+                    "《${episode.date}》离线缓存失败，可点重试"
+                }
+            )
         } finally {
             persist()
             synchronized(stateLock) {
