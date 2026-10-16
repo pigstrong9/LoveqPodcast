@@ -66,7 +66,15 @@ object LoveqParser {
         return EpisodeAudio(url, title)
     }
 
-    private fun pageParamOf(catId: Int): Regex = Regex("""cat_id=$catId&page=(\d+)""")
+    /**
+     * 从分页链接里取页码。
+     *
+     * 「全部节目」（cat_id=0）的分页链接**不带** cat_id，形如 `program.html?&page=2`；
+     * 其余分类才是 `program.html?cat_id=N&page=2`。早先只认带 cat_id 的那种，
+     * 结果「全部节目」这一档的 totalPages 永远算成 1：只能停在第一页，跳年份也失效。
+     * 所以 cat_id 前缀做成可选的，两种形式都要认。
+     */
+    private fun pageParamOf(catId: Int): Regex = Regex("""(?:cat_id=$catId&)?page=(\d+)""")
 
     /**
      * 音频后缀判定不分大小写。
@@ -93,6 +101,15 @@ object LoveqParser {
     private const val PROGRAM_PATH = "/live/program/"
     private const val JINGLE_HOST = "dl.loveq.cn"
     private const val JINGLE_PATH = "/live/audio/"
+
+    /**
+     * 官网列表每页条数。
+     *
+     * 索引里「第 pos 条」换算成页码（跳年份的加速猜测）、离线兜底切一片列表，
+     * 都要用它。放在解析器里是因为它本质上是对官网分页规则的假设，
+     * 改版时应该和选择器一起改；散落在各处的 26 迟早会漏改一个。
+     */
+    const val PAGE_SIZE = 26
 }
 
 /**

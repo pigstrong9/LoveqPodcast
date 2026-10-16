@@ -18,8 +18,6 @@ data class Category(
             Category(2, "国语节目"),
             Category(0, "全部节目")
         )
-
-        fun byId(id: Int): Category = ALL.first { it.id == id }
     }
 }
 
@@ -28,13 +26,31 @@ data class Episode(
     val date: String,
     val title: String
 ) {
-    val year: Int get() = date.substringBefore('.').toIntOrNull() ?: 0
-
-    /** 日期形如 2026.10.12；缺月份时给 0，比较时自然排到最旧一侧 */
-    val month: Int get() = date.split('.').getOrNull(1)?.toIntOrNull() ?: 0
+    /**
+     * 日期形如 2026.10.12。
+     *
+     * year / month / yearMonth 在列表年份分组、日期筛选、跳年份二分里被高频读取，
+     * 构造时一次算好，避免每次访问都去切字符串（尤其 month 早先用 split('.')，
+     * 每次都会新建一个 List）。解析不出来的字段给 0，比较时自然排到最旧一侧。
+     */
+    val year: Int
+    val month: Int
 
     /** 年*100+月：同月内的排序与筛选键（列表整体是新→旧排布） */
-    val yearMonth: Int get() = year * 100 + month
+    val yearMonth: Int
+
+    init {
+        val firstDot = date.indexOf('.')
+        year = (if (firstDot >= 0) date.substring(0, firstDot) else date).toIntOrNull() ?: 0
+        month = if (firstDot < 0) {
+            0
+        } else {
+            val rest = date.substring(firstDot + 1)
+            val secondDot = rest.indexOf('.')
+            (if (secondDot >= 0) rest.substring(0, secondDot) else rest).toIntOrNull() ?: 0
+        }
+        yearMonth = year * 100 + month
+    }
 }
 
 data class PageResult(

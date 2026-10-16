@@ -18,6 +18,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
 class PlayerConnection(context: Context) {
@@ -61,12 +62,15 @@ class PlayerConnection(context: Context) {
         )
 
         scope.launch {
-            while (true) {
-                controller?.let { c ->
-                    positionMs.value = c.currentPosition.coerceAtLeast(0)
-                    if (c.duration > 0) durationMs.value = c.duration
+            // 只在播放中轮询进度：暂停/空闲时直接挂起，不再每 500ms 唤醒一次。
+            // 暂停时的位置由 onPositionDiscontinuity（拖动/跳转）和 onIsPlayingChanged
+            // 各补一次，所以「暂停后拖进度条」进度也不会停在上一拍。
+            isPlaying.collectLatest { playing ->
+                if (!playing) return@collectLatest
+                while (true) {
+                    syncPosition()
+                    delay(POSITION_TICK_MS)
                 }
-                delay(POSITION_TICK_MS)
             }
         }
     }
@@ -123,6 +127,17 @@ class PlayerConnection(context: Context) {
     private val listener = object : Player.Listener {
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             this@PlayerConnection.isPlaying.value = isPlaying
+            // 暂停的一刻轮询已经停了，补一次位置，否则进度条会停在上一拍
+            if (!isPlaying) syncPosition()
+        }
+
+        override fun onPositionDiscontinuity(
+            oldPosition: Player.PositionInfo,
+            newPosition: Player.PositionInfo,
+            reason: Int
+        ) {
+            // 拖动进度条（含暂停时拖动）走这里，立即把新位置同步给界面
+            syncPosition()
         }
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
@@ -152,11 +167,17 @@ class PlayerConnection(context: Context) {
         isPlaying.value = c.isPlaying
         mediaId.value = c.currentMediaItem?.mediaId
         speed.value = c.playbackParameters.speed
-        if (c.duration > 0) durationMs.value = c.duration
+        syncPosition()
         c.currentMediaItem?.let { item ->
             nowTitle.value = item.mediaMetadata.title?.toString()
             nowDate.value = item.mediaMetadata.albumTitle?.toString()
         }
+    }
+
+    private fun syncPosition() {
+        val c = controller ?: return
+        positionMs.value = c.currentPosition.coerceAtLeast(0)
+        if (c.duration > 0) durationMs.value = c.duration
     }
 
     private fun encode(episode: Episode): String =

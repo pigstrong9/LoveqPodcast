@@ -6,6 +6,8 @@ import androidx.lifecycle.viewModelScope
 import cn.loveq.podcast.LoveqApp
 import cn.loveq.podcast.data.Category
 import cn.loveq.podcast.data.Episode
+import cn.loveq.podcast.data.LoveqParser
+import cn.loveq.podcast.data.LoveqRepository
 import cn.loveq.podcast.data.PageResult
 import cn.loveq.podcast.data.Progress
 import cn.loveq.podcast.playback.PlaybackEvents
@@ -247,7 +249,7 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
                 } else {
                     _state.update {
                         it.copy(
-                            episodes = fallback.take(PAGE_SIZE),
+                            episodes = fallback.take(LoveqParser.PAGE_SIZE),
                             startPage = 1,
                             loadedEndPage = 1,
                             // 这个 1 是「一共多少页还不知道」，不是「真只有一页」。
@@ -460,7 +462,7 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
                 return repo.loadPage(p, catId).also { r ->
                     cache(catId, p, r)
                     if (r.totalPages != totalPages) totalPages = r.totalPages
-                    delay(REQUEST_DELAY_MS)
+                    delay(LoveqRepository.REQUEST_DELAY_MS)
                 }
             }
             try {
@@ -475,7 +477,7 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
                     val idx = index.value
                     val pos = if (idx.isEmpty()) -1
                     else idx.indexOfFirst { usable(it) && key(it) <= target }
-                    if (pos < 0) null else pos / PAGE_SIZE + 1
+                    if (pos < 0) null else pos / LoveqParser.PAGE_SIZE + 1
                 }
                 val hitPage = findTargetPage(
                     target = target,
@@ -615,9 +617,5 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
 
     private companion object {
         const val QUEUE_AHEAD = 50
-
-        /** 官网一页的条数，离线兜底时按同样的长度切一片 */
-        const val PAGE_SIZE = 26
-        const val REQUEST_DELAY_MS = 200L
     }
 }

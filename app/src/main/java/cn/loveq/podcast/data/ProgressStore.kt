@@ -109,6 +109,7 @@ class ProgressStore(context: Context) {
         )
         _progressMap.value = _progressMap.value + (id to Progress(id, pos, dur, done, title, date, now))
         _lastId.value = id
+        pruneIfNeeded()
     }
 
     @Synchronized
@@ -127,6 +128,34 @@ class ProgressStore(context: Context) {
         )
         _progressMap.value = _progressMap.value + (id to Progress(id, dur, dur, true, title, date, now))
         _lastId.value = id
+        pruneIfNeeded()
+    }
+
+    /**
+     * 历史裁剪：只留「在听」+ 最近 [MAX_DONE_ENTRIES] 条「听完」。
+     *
+     * 车机连开几年，每年一百多期，done_/time_/meta_ 这些 key 会越攒越多，
+     * 每次启动 reload 和排序都越来越慢。听完的记录留最近几百条足够翻回看，
+     * 「在听」（未听完）的一律保留，[ProgressStore.lastId] 指向的那期也绝不删。
+     */
+    @Synchronized
+    private fun pruneIfNeeded() {
+        val map = _progressMap.value
+        // 快路径：总量还没到上限就不用扫
+        if (map.size <= MAX_DONE_ENTRIES) return
+        val victims = progressIdsToPrune(map.values, MAX_DONE_ENTRIES, _lastId.value)
+        if (victims.isEmpty()) return
+        val editor = prefs.edit()
+        victims.forEach { id ->
+            editor.remove(KEY_POS + id)
+                .remove(KEY_DUR + id)
+                .remove(KEY_DONE + id)
+                .remove(KEY_META + id)
+                .remove(KEY_TIME + id)
+            durations.remove(id)
+        }
+        persist(editor)
+        _progressMap.value = map.filterKeys { it !in victims }
     }
 
     /** 交给单线程队列落盘：既保证顺序，也保证真正写进闪存 */
@@ -156,5 +185,29 @@ class ProgressStore(context: Context) {
         const val KEY_BOOST = "boost"
         const val KEY_IMMERSIVE = "immersive"
         const val DONE_EPSILON = 30_000L
+
+        /**
+         * 历史里最多保留多少条「听完」的记录。超出的按 updatedAt 从旧到新裁掉。
+         * 「在听」不受此上限约束。
+         */
+        const val MAX_DONE_ENTRIES = 300
     }
+}
+
+/**
+ * 计算需要从进度表里裁掉的 id。
+ *
+ * 规则：保留全部「在听」、最近 [maxDone] 条「听完」，以及 [keepId]（当前正在收听的那一期，
+ * 绝不裁掉，否则「继续收听」会指向一个不存在的进度）。纯函数，便于 JVM 单测。
+ */
+internal fun progressIdsToPrune(
+    progresses: Collection<Progress>,
+    maxDone: Int,
+    keepId: Long?
+): Set<Long> {
+    val done = progresses.filter { it.done }
+    if (done.size <= maxDone) return emptySet()
+    val keep = done.sortedByDescending { it.updatedAt }.take(maxDone).mapTo(HashSet()) { it.id }
+    if (keepId != null) keep.add(keepId)
+    return done.filter { it.id !in keep }.mapTo(HashSet()) { it.id }
 }

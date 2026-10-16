@@ -1,6 +1,7 @@
 package cn.loveq.podcast.data
 
 import android.content.Context
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -80,6 +81,7 @@ class EpisodeIndexStore(context: Context) {
             // 按 id 去重避免索引里出现重复项（重复 id 会让搜索列表的 LazyColumn key 冲突崩溃）
             val seen = all.mapTo(HashSet<Long>(all.size * 2)) { it.id }
             var page = startPage
+            var sinceFlush = 0
             while (true) {
                 val result = repository.loadPage(page)
                 totalPagesKnown = result.totalPages
@@ -88,11 +90,19 @@ class EpisodeIndexStore(context: Context) {
                 }
                 pagesDone = page
                 _episodes.value = all.toList()
-                writeCache(all, page, result.totalPages)
+                // 每页都全量落盘 + fsync 太伤闪存（全量 90 多页就是 90 多次），
+                // 攒几页写一次、末页必写。断电最多丢 CACHE_FLUSH_EVERY 页，
+                // 下次启动从文件里的 pagesDone 续抓，不会重来
+                if (++sinceFlush >= CACHE_FLUSH_EVERY || page >= result.totalPages) {
+                    writeCache(all, page, result.totalPages)
+                    sinceFlush = 0
+                }
                 if (page >= result.totalPages) break
                 page++
-                delay(REQUEST_DELAY_MS)
+                delay(LoveqRepository.REQUEST_DELAY_MS)
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
             // 已抓页面均已落盘，下次启动自动续抓
         } finally {
@@ -113,7 +123,7 @@ class EpisodeIndexStore(context: Context) {
                 if (result.episodes.all { it.id in oldIds }) break
                 fetched += result.episodes.filter { it.id !in oldIds }
                 page++
-                delay(REQUEST_DELAY_MS)
+                delay(LoveqRepository.REQUEST_DELAY_MS)
             }
             if (fetched.isNotEmpty()) {
                 val fetchedIds = fetched.mapTo(HashSet()) { it.id }
@@ -122,6 +132,8 @@ class EpisodeIndexStore(context: Context) {
                 pagesDone = totalPagesKnown
                 writeCache(merged, pagesDone, totalPagesKnown)
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
         } finally {
             _loading.value = false
@@ -184,6 +196,8 @@ class EpisodeIndexStore(context: Context) {
 
     private companion object {
         const val DAY_MS = 24L * 3600 * 1000
-        const val REQUEST_DELAY_MS = 200L
+
+        /** 攒够这么多页才落一次盘（末页必写）；断电容忍度见 buildAll 里的注释 */
+        const val CACHE_FLUSH_EVERY = 5
     }
 }

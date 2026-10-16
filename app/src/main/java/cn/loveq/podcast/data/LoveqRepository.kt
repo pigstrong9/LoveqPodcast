@@ -72,5 +72,8 @@ class LoveqRepository {
 
     companion object {
         const val SITE = "https://www.loveq.cn"
+
+        /** 连续翻页之间的最小间隔：对官网客气一点，也是各加载循环共用的节流值 */
+        const val REQUEST_DELAY_MS = 200L
     }
 }
