@@ -50,6 +50,25 @@ class LoveqParserTest {
     }
 
     @Test
+    fun `全部节目的分页链接不带 cat_id 也要能数出总页数`() {
+        // 官网实测（2026-10）：cat_id=0 的分页是 program.html?&page=2 … 97，不带 cat_id；
+        // 只认 cat_id=N&page=M 的旧规则会把「全部节目」的总页数算成 1
+        val allCat = """
+            <html><body>
+            <dl id="program22915"><dt><a href="program_download-22915.html">2026.10.12</a></dt>
+                <dd class="ct"><span>标题</span></dd></dl>
+            <a href="program.html?cat_id=0&year=2026">2026</a>
+            <a href="program.html?&page=2">2</a>
+            <a href="program.html?&page=97">最末页</a>
+            </body></html>
+        """.trimIndent()
+
+        val page = LoveqParser.parseList(allCat, base, catId = 0)
+
+        assertEquals(97, page.totalPages)
+    }
+
+    @Test
     fun `列表结构变化时抛错而不是返回空页污染缓存`() {
         // 有详情链接、没有任何 dl[id^=program]：这是改版，不是「这页没内容」
         val restructured = """
