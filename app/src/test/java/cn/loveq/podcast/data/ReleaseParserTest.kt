@@ -45,6 +45,25 @@ class ReleaseParserTest {
     }
 
     @Test
+    fun `digest 前缀与 hex 都大写时也能取出小写哈希`() {
+        // 上面那条其实测不到 .lowercase()：真实快照里的 digest 本来就是小写，
+        // 归一化是个空操作。这条把人造的「大写 digest」喂进去，才真正钉住这一步 ——
+        // 否则哪天上游回一个大写 digest，哈希比对会全线不通过，而测试还是绿的。
+        val original = fixture("latest_v1_5.json")
+        val json = original.replace(
+            "\"digest\":\"sha256:6b9ba13f3e743ed8e0bf9630019e5315e138a1efc454d3f56a88558b00695962\"",
+            "\"digest\":\"SHA256:6B9BA13F3E743ED8E0BF9630019E5315E138A1EFC454D3F56A88558B00695962\""
+        )
+        assertTrue("替换没生效（快照格式变了？检查 digest 的精确原文）", json != original)
+
+        val info = checkNotNull(parseLatestRelease(json))
+        assertEquals(
+            "6b9ba13f3e743ed8e0bf9630019e5315e138a1efc454d3f56a88558b00695962",
+            info.sha256
+        )
+    }
+
+    @Test
     fun `没有 digest 字段时哈希为 null 而不是整条失败`() {
         // 2026 之前的 Release 没有 digest；这时靠签名闸兜底，不是解析失败
         val json = fixture("latest_v1_5.json").replace(Regex("\"digest\"\\s*:\\s*\"[^\"]*\""), "\"digest\": null")
