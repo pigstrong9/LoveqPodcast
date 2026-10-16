@@ -267,7 +267,14 @@ class PlaybackService : MediaSessionService() {
                 val audio = local?.let { EpisodeAudio(Uri.fromFile(it).toString(), null) }
                     ?: app.repository.fetchAudio(episode.id)
                 resolvingIndex = -1
-                if (index != player.currentMediaItemIndex) return@launch
+                if (index != player.currentMediaItemIndex) {
+                    // 早退必须顺手复位 pendingLoad：用户切到的那一期若已经解析过，
+                    // 不会再触发新任务来收尾，这个 true 会一直留着 ——
+                    // 之后 onPlayerError 直接返回（真错误被吞掉），
+                    // STATE_ENDED 的自动连播也会被 !pendingLoad 挡住
+                    pendingLoad = false
+                    return@launch
+                }
                 val item = lazyItem(episode)
                     .buildUpon()
                     .setUri(audio.url)

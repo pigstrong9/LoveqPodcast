@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 11（API 30）及以下的自动备份规则。
+     离线整集动辄上百 MB 且能重新下载，不进备份；播放进度 / 连播队列 / 全库索引照常备份。
+     （流式收听缓存在 cacheDir，系统本就排除，无需在此声明。） -->
+<full-backup-content>
+    <exclude domain="file" path="offline/" />
+</full-backup-content>

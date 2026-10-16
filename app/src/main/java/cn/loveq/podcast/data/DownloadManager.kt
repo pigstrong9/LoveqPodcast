@@ -115,17 +115,6 @@ class DownloadManager(context: Context, private val repository: LoveqRepository)
         pump()
     }
 
-    fun cancel(episodeId: Long) {
-        synchronized(stateLock) {
-            if (currentEpisodeId == episodeId) stopPipelineLocked()
-            _downloads.value = _downloads.value.filterNot { it.episode.id == episodeId }
-            if (currentEpisodeId == episodeId) currentEpisodeId = -1L
-        }
-        File(dir, "$episodeId.mp3.part").delete()
-        persist()
-        pump()
-    }
-
     /** 手动删除，或听完由服务自动调用 */
     fun remove(episodeId: Long) {
         synchronized(stateLock) {
@@ -139,12 +128,6 @@ class DownloadManager(context: Context, private val repository: LoveqRepository)
         persist()
         pump()
     }
-
-    fun has(episodeId: Long): Boolean =
-        localFile(episodeId) != null || _downloads.value.any { it.episode.id == episodeId }
-
-    /** 已下载整集占用的空间（不含流式缓存） */
-    fun usedBytes(): Long = dir.listFiles()?.sumOf { if (it.name.endsWith(".mp3")) it.length() else 0L } ?: 0L
 
     @Volatile
     private var currentEpisodeId: Long = -1L
