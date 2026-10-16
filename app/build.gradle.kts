@@ -37,7 +37,11 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // 正式包开 R8：压缩 + 资源裁剪。Jsoup 没有随包带 consumer 规则，
+            // 保留规则见 proguard-rules.pro；其余依赖（compose/media3/okhttp/coroutines）
+            // 都自带 consumer 规则，交给 R8 处理即可。
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             // 有签名配置就用正式签名，否则退回 debug 签名（保证照样能装）
             signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
