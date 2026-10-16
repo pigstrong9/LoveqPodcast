@@ -28,6 +28,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -207,8 +208,16 @@ internal fun SettingsDialog(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var clearing by remember { mutableStateOf(false) }
+    var aboutOpen by remember { mutableStateOf(false) }
     // 上限由调用方传入：首次 get() 时按可用空间算定，拿不到时退回硬上限 2GB
     val cacheCap = formatSize(cacheCapBytes)
+
+    // 「关于」不是另开一个窗口，而是把设置页整页换成声明页：两栏和单栏都从设置进来，
+    // 这样不必给 Sidebar 和 PhoneHeader 各加一个入口，声明也只有一个来源
+    if (aboutOpen) {
+        AboutDialog(onBack = { aboutOpen = false })
+        return
+    }
 
     DialogHost(
         onDismiss = onDismiss,
@@ -341,10 +350,94 @@ internal fun SettingsDialog(
                         CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                     }
                 }
+
+                Spacer(Modifier.height(22.dp))
+
+                // ---- 关于 ----
+                Text(
+                    "关于",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = AppColors.Muted
+                )
+                Spacer(Modifier.height(10.dp))
+                TextButton(onClick = { aboutOpen = true }) {
+                    Text(
+                        "非官方声明与联系方式",
+                        color = AppColors.Red,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
             }
         },
         confirmText = "关闭",
         onConfirm = onDismiss,
+        dismissText = null
+    )
+}
+
+/**
+ * 关于：非官方声明 + 版权归属 + 联系方式。
+ *
+ * 这段文字是有实际用处的（法律上的"去混淆"——讲清楚和官方没有任何隶属关系），
+ * 所以必须让用户在 App 里就看得见。只写在 README 里，对装了 APK 的人等于没声明。
+ */
+@Composable
+private fun AboutDialog(onBack: () -> Unit) {
+    val context = LocalContext.current
+    val version = remember {
+        runCatching {
+            context.packageManager.getPackageInfo(context.packageName, 0).versionName
+        }.getOrNull().orEmpty()
+    }
+
+    DialogHost(
+        onDismiss = onBack,
+        title = "关于",
+        text = {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+            ) {
+                Text(
+                    if (version.isBlank()) "LoveqPodcast" else "LoveqPodcast  v$version",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = AppColors.Ink,
+                    fontWeight = FontWeight.Bold
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "《一些事一些情》第三方播客客户端",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = AppColors.Muted
+                )
+
+                Spacer(Modifier.height(18.dp))
+
+                // 可选中有两个原因：这邮箱是权利人唯一的联系方式，
+                // 手机用户能长按复制；也免得日后有人截图时说"看不清写的是什么"
+                SelectionContainer {
+                    Column {
+                        Text(
+                            "本应用是非官方第三方客户端，与 LoveQ 官网及《一些事一些情》节目方" +
+                                "无任何隶属关系。节目内容版权归原作者所有。本应用不存储、不分发" +
+                                "任何音频，仅代为访问官网公开链接。非商业用途。",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = AppColors.Body
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            "如权利人认为不妥，请通过 pigstrong133@gmail.com 联系，" +
+                                "我将立即停止分发并下架。",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = AppColors.Body
+                        )
+                    }
+                }
+            }
+        },
+        confirmText = "返回",
+        onConfirm = onBack,
         dismissText = null
     )
 }
