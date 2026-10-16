@@ -36,6 +36,9 @@ android {
     }
 
     buildTypes {
+        debug {
+            buildConfigField("boolean", "UPDATE_USE_FIXTURE", "false")
+        }
         release {
             // 正式包开 R8：压缩 + 资源裁剪。Jsoup 没有随包带 consumer 规则，
             // 保留规则见 proguard-rules.pro；其余依赖（compose/media3/okhttp/coroutines）
@@ -45,6 +48,16 @@ android {
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             // 有签名配置就用正式签名，否则退回 debug 签名（保证照样能装）
             signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
+            buildConfigField("boolean", "UPDATE_USE_FIXTURE", "false")
+        }
+        // 测试用构建：跑在线升级的端到端验证。
+        // 必须 initWith(release) —— 校验签名时比的是「已装应用的证书」，
+        // 用 debug 签名的话闸② 必然拦下，根本走不到安装器。
+        create("fixture") {
+            initWith(getByName("release"))
+            isMinifyEnabled = false
+            isShrinkResources = false
+            buildConfigField("boolean", "UPDATE_USE_FIXTURE", "true")
         }
     }
     compileOptions {
@@ -56,6 +69,9 @@ android {
     }
     buildFeatures {
         compose = true
+        // 需要它来区分「真打 API」和「读夹具」：ReleaseSource 的实现在编译期定死，
+        // R8 才能把夹具那条分支整个删掉
+        buildConfig = true
     }
 }
 

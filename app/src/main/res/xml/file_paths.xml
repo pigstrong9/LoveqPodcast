@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 只开放 cacheDir/update 这一个子目录给安装器读。
+     不要用 <cache-path path="." />：那等于把整个缓存目录都开出去，
+     而缓存里还有 2GB 的音频分片，没理由让外部应用能读到。 -->
+<paths>
+    <cache-path name="update" path="update/" />
+</paths>
