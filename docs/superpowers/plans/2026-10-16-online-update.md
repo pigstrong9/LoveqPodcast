@@ -2717,3 +2717,63 @@ git commit -m "docs(update): 记录镜像实测结论、在线升级实现与 ta
 9. **任务 9 里 `PrefsSourceMemory` 被 new 了两次**（一次给 `GithubReleases`、一次给 `UpdateCenter`）。已收成一个实例。
 10. 规格 §4.1 把「夹具实现」列在 `GithubReleases.kt` 的代码块里但没明说位置 —— 本计划确定为**同一文件**，与规格一致。
 11. 规格 §4.2 的 `Downloading` 带 `source` 字段，本计划第一稿漏了。已补回，并让进度文案显示当前镜像名。
+
+---
+
+## 执行记录（2026-10-16 实做，任务 1-14）
+
+### 任务 7-12 的执行修正
+
+12. **任务 7 的 `ApkInstaller` 可原样照抄**，无需改动（唯一依赖 `PackageManagerCompat` 的
+    `getSignatures(PackageManager, String)` 在 `androidx.core:core:1.15.0` 里存在）。
+13. **任务 8 的 `class UpdateCenter(` 编译不过**：它依赖的 `ReleaseSource` / `ApkInstaller` / `SourceMemory`
+    都是 `internal`，public 构造器撞 Kotlin 的 `EXPOSED_PARAMETER_TYPE`（三条错误，实测）。
+    已改为 `internal class UpdateCenter`。**不要**反过来把那三个依赖类放宽可见性。
+14. **任务 8 的 `installPending()` 缺异常处理**：`installer.install()` 从界面回调（主线程）调用，
+    系统里没有安装器实现时抛出会直接崩溃。已按 `downloadAndInstall()` 同样的方式包 `try/catch → Failed(INSTALL)`。
+15. **任务 9 的 `lateinit var updates: UpdateCenter` 也编译不过**：public 属性暴露 internal 类型
+    （`EXPOSED_PROPERTY_TYPE`）。已改成 `internal lateinit var updates`（`private set` 保留）。
+16. **任务 9 的代码块漏了两个 import**（`playback.QueueStore`、`playback.VolumeBoost`）—— 照抄会编译不过。已补。
+17. **任务 10 的 `androidx.compose.ui.platform.LocalLifecycleOwner` 已废弃**（compose-ui 1.7.5 把它挪到了
+    lifecycle-runtime-compose）。已改用 `androidx.lifecycle.compose.LocalLifecycleOwner`。
+18. **任务 11 说 `CategoryNav.kt` 要补 `Box` 与 `offset` 两个 import，实际只缺 `offset`**（`Box` 早就在）。
+19. **任务 11 的 `SettingsDialog` 新增的是 7 个参数**，不是 6 个（`updateStatus`、`currentVersion` + 5 个回调）。
+
+### 任务 13：端到端（**部分执行，设备环节取消**）
+
+已完成的部分（都有实测证据）：
+
+- 步骤 1-2：打出 `versionCode 8 / versionName 1.6` 的 release 包，
+  sha256 `01ed648f510f51cda96ddb47c6538480d559ed00ba35dded8540d6c37c2603bc`、4,571,373 字节；
+  `build.gradle.kts` 已还原（工作区干净）。
+- 步骤 3-4：`gh release create v1.6-test --prerelease` 成功；GitHub 返回的 `asset.digest` 与本地 sha256
+  **完全一致**；`/releases/latest` 仍为 `v1.5`（prerelease 未污染）。夹具 JSON 已生成。
+- 步骤 5-6：101 个单测全绿；`assembleFixture` 出包并成功覆盖安装到平板（1.5 / versionCode 7，与已装同版本）。
+
+**未完成：步骤 7-9（设备上的 UI 走查）。** 用户在 2026-10-16 深夜明确要求「不用用平板验证」，
+故取消。为避免扰民，未再对平板执行任何 adb 命令。
+
+**作为替代，把链路分段做了无设备验证**（这是设备环节之外能做的最强验证）：
+
+| 验证项 | 方法 | 结果 |
+|---|---|---|
+| 四条资产前缀（`UpdateSources.ASSET` 全序） | 对真实 4,571,373 字节资产**全量下载** + SHA256 | `gh-proxy.com` 9.9s / `cdn.gh-proxy.com` 3.5s / `ghfast.top` 4.6s **三条全量成功且 SHA256 与 GitHub `digest` 一致**；**直连 87.5s 下到 0 字节（超时）** |
+| 三条元数据前缀（`UpdateSources.API`） | `GET releases/latest` | 三条全 200（直连最快） |
+| 闸②（签名） | `apksigner verify --print-certs` 三方比对 | release / fixture / 平板已装应用三者证书均为 `e5110d617964a58380ab81cfabf8c3ac1341760181f9ef3ddfc23a4d879c08dd`；debug 为 `d35f09d3…6324`（故夹具必须 `initWith(release)`） |
+| 闸③（versionCode） | `aapt2 dump badging` | 测试包 versionCode 8 > 已装 7 ✓ |
+| R8 删除夹具 | 读 release 的 `mapping.txt` 与 dex 字符串 | `FixtureReleaseSource` 0 命中、`update_fixture` 0 命中 |
+| 真实 `releases/latest` 解析 | 对照任务 4 的真实响应快照 | 用例已覆盖 |
+
+**遗留风险**：`ApkInstaller.install()` 发出的那个 `Intent`（FileProvider content URI + 系统安装器）
+以及「点安装后真的装上」这条路径，**仍未经真机验证**。必要时按上面步骤 7 走一遍即可。
+
+**注**：夹具 `app/src/fixture/assets/update_fixture.json` 里的资产 URL 指向已被删除的 `v1.6-test`
+（prerelease 按约定测完即删），所以它是**形态样本**而不是可下载的活链接。日后重跑端到端时，
+用 `gh release create <tag> --prerelease` 重传同一个 APK（留档在仓库外的 `.loveq-e2e/`）即可复用。
+
+### 任务 14：文档
+
+- `README.md` 功能列表已加「应用内升级」一条。
+- **`agent.md` 在 `.gitignore`（第 20 行），是本地参考文档、不入库**：镜像实测表与「在线升级」一节
+  已就地更新，但只存在于工作区，**不会出现在任何提交里**，换机器或重新 clone 后不跟着走。
+  若希望这些结论随仓库分发，得换个不被忽略的文件（或调 `.gitignore`）—— 本任务未擅自改动忽略规则。
