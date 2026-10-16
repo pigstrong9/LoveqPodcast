@@ -1046,6 +1046,7 @@ package cn.loveq.podcast.data
 
 import java.io.File
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -1090,7 +1091,7 @@ class Sha256Test {
     fun `内容不同则哈希不同`() {
         val a = sha256Of(tempFile("a".toByteArray()))
         val b = sha256Of(tempFile("b".toByteArray()))
-        assert(a != b)
+        assertTrue(a != b)
     }
 }
 ```
@@ -2688,7 +2689,11 @@ git commit -m "docs(update): 记录镜像实测结论、在线升级实现与 ta
 1. **`SourceRotation.markOk()` / `lastOk` 是死代码**（同一件事有两个机制：它和 `SourceMemory.remember`，而成功路径只走后者）。已删除，并删掉对应单测；`SourceRotation` 只留 `next()`。
 2. **`parseLatestRelease` 里原本有个 `VersionTags.parse() == null → return null` 的判断**，与规格 §3 冲突：规格要求「tag 不可解析 → 按不可比 → 已是最新处理」，而在解析层返回 null 会被 `GithubReleases` 抛成异常，最终显示成「检查失败」。已删除该判断，改由 `VersionTags.isNewer` 判为 `UpToDate`；对应单测也改成断言「解析得出、但不提示升级」。
 3. **任务 2 的测试初稿有两处会红**：`assertNull(parse("v1.5 "))` 与 `assertNull(parse("1.5.1.2.3..."))` —— `parse` 会先 `trim()`，且长版本号本就该能解析。已移入正确的用例。
-4. **任务 3 的测试用了 Kotlin 的 `assert(...)`**，它在 JVM 上默认不生效（需要 `-ea`），等于这条断言白写。已改成 `assertTrue(...)`。
+4. **任务 3 的测试原本用了 Kotlin 的 `assert(...)`**。已改成 `assertTrue(...)`，理由是**显式**：不依赖测试运行器是否传 `-ea`。
+   （更正：本计划初稿断言它「在 JVM 上默认不生效、等于白写」是**错的**。2026-10-16 用探针实测 ——
+   往测试里放一条 `assert(false)` 并运行 —— 结果是测试 **FAILED**，说明 Gradle 的 `Test` 任务
+   默认 `enableAssertions = true`，Kotlin 的 `assert()` 在 `testDebugUnitTest` 下是**真的生效**的。
+   所以原写法不会白写，只是不够显式；`assertTrue` 仍更稳妥。）
 5. **任务 4 里「没有 apk 资产」的用例靠字符串替换真实响应**，依赖 GitHub 的 JSON 缩进恰好是 `"name": "xxx"`（带空格），换个版本就可能失效。已改成手写字面量 JSON。
 6. **`FixtureReleaseSource` 若放进 `src/fixture/java/`，`src/main` 的 `LoveqApp` 会编译不过**（release 变体找不到该类）。所以它放在 `src/main`，靠 `BuildConfig.UPDATE_USE_FIXTURE` 是编译期常量让 R8 在 release 里删掉整个分支。
 7. **任务 10 的 import 里有一批用不到的**（`Arrangement`、`offset`、`padding`、`Color`、`getValue`/`setValue`/`mutableStateOf`/`remember`）以及一个全限定名 `android.content.Intent`。已清理。
