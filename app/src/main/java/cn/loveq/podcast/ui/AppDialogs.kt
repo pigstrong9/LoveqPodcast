@@ -376,7 +376,7 @@ internal fun SettingsDialog(
 }
 
 /**
- * 关于：非官方声明 + 版权归属 + 联系方式。
+ * 关于：非官方声明 + 版权归属 + 维权联系入口。
  *
  * 这段文字是有实际用处的（法律上的"去混淆"——讲清楚和官方没有任何隶属关系），
  * 所以必须让用户在 App 里就看得见。只写在 README 里，对装了 APK 的人等于没声明。
@@ -414,8 +414,8 @@ private fun AboutDialog(onBack: () -> Unit) {
 
                 Spacer(Modifier.height(18.dp))
 
-                // 可选中有两个原因：这邮箱是权利人唯一的联系方式，
-                // 手机用户能长按复制；也免得日后有人截图时说"看不清写的是什么"
+                // 可选中有两个原因：里面的仓库地址要能长按复制（车机上没法手打），
+                // 也免得日后有人截图时说"看不清写的是什么"
                 SelectionContainer {
                     Column {
                         Text(
@@ -427,7 +427,8 @@ private fun AboutDialog(onBack: () -> Unit) {
                         )
                         Spacer(Modifier.height(12.dp))
                         Text(
-                            "如权利人认为不妥，请通过 pigstrong133@gmail.com 联系，" +
+                            "如权利人认为不妥，可在项目仓库提 Issue 联系" +
+                                "（github.com/pigstrong9/LoveqPodcast/issues），" +
                                 "我将立即停止分发并下架。",
                             style = MaterialTheme.typography.bodyMedium,
                             color = AppColors.Body
