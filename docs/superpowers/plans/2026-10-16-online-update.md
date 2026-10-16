@@ -1495,8 +1495,12 @@ enum class FailureKind { CHECK, DOWNLOAD, INTEGRITY, UNKNOWN_SOURCES, INSTALL }
  *
  * 下载跑在自己 scope 上（照 [DownloadManager] 的写法）：关掉设置弹窗不该掐断下载，
  * 重新打开还能看到进度。
+ *
+ * 可见性：本类依赖的 `ReleaseSource` / `ApkInstaller` / `SourceMemory` 都是 `internal`，
+ * 构造器写成 public 会直接撞 Kotlin 的 `EXPOSED_PARAMETER_TYPE`（实测确实撞了），
+ * 所以本类声明为 `internal`。
  */
-class UpdateCenter(
+internal class UpdateCenter(
     context: Context,
     private val source: ReleaseSource,
     private val installer: ApkInstaller,
@@ -1631,7 +1635,12 @@ class UpdateCenter(
         }
         if (installer.needsUnknownSources()) return
         _status.value = UpdateStatus.ReadyToInstall(file)
-        installer.install(file)
+        // 与 downloadAndInstall 同样的理由：从界面回调里抛出会崩溃
+        try {
+            installer.install(file)
+        } catch (e: Exception) {
+            _status.value = UpdateStatus.Failed(FailureKind.INSTALL, e.message)
+        }
     }
 
     /** 兜底：全部源都失败时打开 Release 页面，让用户自己下 */
@@ -1708,6 +1717,9 @@ import cn.loveq.podcast.data.ProgressStore
 import cn.loveq.podcast.data.RateLimitGuard
 import cn.loveq.podcast.data.ReleaseSource
 import cn.loveq.podcast.data.UpdateCenter
+// 原有 import，计划初稿的代码块漏抄了这两行（VolumeBoost / QueueStore 仍在使用）
+import cn.loveq.podcast.playback.QueueStore
+import cn.loveq.podcast.playback.VolumeBoost
 
 class LoveqApp : Application() {
 
@@ -1723,7 +1735,9 @@ class LoveqApp : Application() {
         private set
     lateinit var downloads: DownloadManager
         private set
-    lateinit var updates: UpdateCenter
+    // 必须是 internal：public 属性会暴露 internal 类型 UpdateCenter（实测报
+    // EXPOSED_PROPERTY_TYPE）。同模块内的界面照样能访问
+    internal lateinit var updates: UpdateCenter
         private set
 
     override fun onCreate() {
@@ -1816,11 +1830,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+// 用新位置：compose-ui 1.7.5 里 androidx.compose.ui.platform.LocalLifecycleOwner 已标
+// @Deprecated（挪到了 lifecycle-runtime-compose）。依赖已在 version catalog 里
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import cn.loveq.podcast.data.FailureKind
 import cn.loveq.podcast.data.UpdateStatus
 import cn.loveq.podcast.ui.theme.AppColors
