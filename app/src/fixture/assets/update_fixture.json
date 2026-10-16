@@ -1,0 +1,49 @@
+{
+  "url": "https://api.github.com/repos/pigstrong9/LoveqPodcast/releases/414514768",
+  "assets_url": "https://api.github.com/repos/pigstrong9/LoveqPodcast/releases/414514768/assets",
+  "upload_url": "https://uploads.github.com/repos/pigstrong9/LoveqPodcast/releases/414514768/assets{?name,label}",
+  "html_url": "https://github.com/pigstrong9/LoveqPodcast/releases/tag/v1.5",
+  "id": 414514768,
+  "author": {
+    "login": "pigstrong9",
+    "id": 29220747,
+    "node_id": "MDQ6VXNlcjI5MjIwNzQ3",
+    "avatar_url": "https://avatars.githubusercontent.com/u/29220747?v=4",
+    "gravatar_id": "",
+    "url": "https://api.github.com/users/pigstrong9",
+    "html_url": "https://github.com/pigstrong9",
+    "followers_url": "https://api.github.com/users/pigstrong9/followers",
+    "following_url": "https://api.github.com/users/pigstrong9/following{/other_user}",
+    "gists_url": "https://api.github.com/users/pigstrong9/gists{/gist_id}",
+    "starred_url": "https://api.github.com/users/pigstrong9/starred{/owner}{/repo}",
+    "subscriptions_url": "https://api.github.com/users/pigstrong9/subscriptions",
+    "organizations_url": "https://api.github.com/users/pigstrong9/orgs",
+    "repos_url": "https://api.github.com/users/pigstrong9/repos",
+    "events_url": "https://api.github.com/users/pigstrong9/events{/privacy}",
+    "received_events_url": "https://api.github.com/users/pigstrong9/received_events",
+    "type": "User",
+    "user_view_type": "public",
+    "site_admin": false
+  },
+  "node_id": "RE_kwDOVHBDK84YtP5Q",
+  "tag_name": "v1.6",
+  "target_commitish": "main",
+  "name": "v1.6",
+  "draft": false,
+  "immutable": false,
+  "prerelease": true,
+  "created_at": "2026-10-16T03:42:38Z",
+  "updated_at": "2026-10-16T03:45:28Z",
+  "published_at": "2026-10-16T03:45:16Z",
+  "assets": [
+    {
+      "name": "update-test-1.6.apk",
+      "size": 4571373,
+      "browser_download_url": "https://github.com/pigstrong9/LoveqPodcast/releases/download/v1.6-test/update-test-1.6.apk",
+      "digest": "sha256:01ed648f510f51cda96ddb47c6538480d559ed00ba35dded8540d6c37c2603bc"
+    }
+  ],
+  "tarball_url": "https://api.github.com/repos/pigstrong9/LoveqPodcast/tarball/v1.5",
+  "zipball_url": "https://api.github.com/repos/pigstrong9/LoveqPodcast/zipball/v1.5",
+  "body": "### 端到端验证用的假版本\n\n这份响应来自夹具（不是真的 Release）。资产指向一个临时 prerelease，用来把「检查 → 下载 → 三道校验 → 弹安装器」整条链跑通。"
+}
