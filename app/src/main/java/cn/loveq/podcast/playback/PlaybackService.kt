@@ -448,6 +448,33 @@ class PlaybackService : MediaSessionService() {
             // 在那儿清零等于没设上限。真正恢复出声（STATE_READY）或用户重新点播才归零
         }
 
+        override fun onPositionDiscontinuity(
+            oldPosition: Player.PositionInfo,
+            newPosition: Player.PositionInfo,
+            reason: Int
+        ) {
+            // 快进/拖动进度条超过当前集结尾时，ExoPlayer 不会自动跳下一集
+            // （STATE_ENDED 只在自然播放到结尾时触发）。这里检测 seek 后是否越界，
+            // 越界且有下一集就自动跳转
+            if (reason == Player.DISCONTINUITY_REASON_SEEK) {
+                val duration = player.duration
+                val position = player.currentPosition
+                if (duration > 0 && position >= duration - RESUME_EPSILON_MS) {
+                    val nextIndex = player.currentMediaItemIndex + 1
+                    if (nextIndex < queue.size && !pendingLoad) {
+                        val endedId = player.currentMediaItem?.mediaId?.toLongOrNull()
+                        val ended = endedId?.let { episodeOf(it) }
+                        if (ended != null) {
+                            app.progressStore.markDone(ended.id, currentTitle, ended.date)
+                            app.downloads.remove(ended.id)
+                        }
+                        player.seekToDefaultPosition(nextIndex)
+                        resolveAndPlay(nextIndex)
+                    }
+                }
+            }
+        }
+
         override fun onPlaybackStateChanged(playbackState: Int) {
             if (playbackState == Player.STATE_READY) {
                 // 能正常出声音说明直链和网络都恢复了，两类重试计数归零

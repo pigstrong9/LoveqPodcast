@@ -370,8 +370,6 @@ private fun FullScreenPlayerDialog(
                     )
                 )
                 .background(AppColors.Player)
-                // 同上：状态栏已隐藏，只避让导航栏，否则顶部会多一条空白
-                .windowInsetsPadding(WindowInsets.navigationBars)
         ) {
             Column(Modifier.fillMaxSize()) {
                 SheetHandle(onCollapse = onClose)

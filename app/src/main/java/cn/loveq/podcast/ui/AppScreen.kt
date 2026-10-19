@@ -93,6 +93,7 @@ fun AppScreen(
     val metaDate by viewModel.nowDate.collectAsStateWithLifecycle()
     val immersive by viewModel.immersive.collectAsStateWithLifecycle()
     val autoResume by viewModel.autoResume.collectAsStateWithLifecycle()
+    val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
     val updateStatus by viewModel.updateStatus.collectAsStateWithLifecycle()
     val currentVersion = remember { viewModel.currentVersionName() }
     val showUpdateDot = updateStatus is UpdateStatus.Available
@@ -458,6 +459,8 @@ fun AppScreen(
             onImmersiveChange = viewModel::setImmersive,
             autoResume = autoResume,
             onAutoResumeChange = viewModel::setAutoResume,
+            themeMode = themeMode,
+            onThemeModeChange = viewModel::setThemeMode,
             updateStatus = updateStatus,
             currentVersion = currentVersion,
             onCheckUpdate = viewModel::checkUpdate,
@@ -468,6 +471,7 @@ fun AppScreen(
             onRemove = viewModel::removeOffline,
             onRetry = viewModel::retryOffline,
             onCleared = { cacheTick++ },
+            onClearEpisodeCache = viewModel::clearEpisodeCache,
             onDismiss = { settingsOpen = false }
         )
     }

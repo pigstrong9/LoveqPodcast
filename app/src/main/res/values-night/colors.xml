@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 与 Compose 深色色板的 Canvas 保持一致（Theme.kt 里的 DarkPalette.canvas） -->
+    <color name="app_canvas">#131114</color>
+</resources>

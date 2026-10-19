@@ -3,6 +3,7 @@ package cn.loveq.podcast
 import android.app.Application
 import cn.loveq.podcast.data.ApkInstaller
 import cn.loveq.podcast.data.DownloadManager
+import cn.loveq.podcast.data.EpisodeCacheStore
 import cn.loveq.podcast.data.EpisodeIndexStore
 import cn.loveq.podcast.data.FixtureReleaseSource
 import cn.loveq.podcast.data.GithubReleases
@@ -25,6 +26,8 @@ class LoveqApp : Application() {
         private set
     lateinit var indexStore: EpisodeIndexStore
         private set
+    lateinit var episodeCache: EpisodeCacheStore
+        private set
     lateinit var queueStore: QueueStore
         private set
     lateinit var downloads: DownloadManager
@@ -41,6 +44,7 @@ class LoveqApp : Application() {
         repository = LoveqRepository(rateLimitGuard)
         progressStore = ProgressStore(this)
         indexStore = EpisodeIndexStore(this, rateLimitGuard)
+        episodeCache = EpisodeCacheStore(this)
         queueStore = QueueStore(this)
         downloads = DownloadManager(this, repository)
 

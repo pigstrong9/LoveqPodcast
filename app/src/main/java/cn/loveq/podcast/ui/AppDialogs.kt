@@ -54,6 +54,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import cn.loveq.podcast.data.DownloadManager
+import cn.loveq.podcast.data.ThemeMode
 import cn.loveq.podcast.data.UpdateStatus
 import cn.loveq.podcast.playback.MediaCache
 import cn.loveq.podcast.ui.theme.AppColors
@@ -203,6 +204,8 @@ internal fun SettingsDialog(
     onImmersiveChange: (Boolean) -> Unit,
     autoResume: Boolean,
     onAutoResumeChange: (Boolean) -> Unit,
+    themeMode: ThemeMode,
+    onThemeModeChange: (ThemeMode) -> Unit,
     updateStatus: UpdateStatus,
     currentVersion: String,
     onCheckUpdate: () -> Unit,
@@ -213,6 +216,7 @@ internal fun SettingsDialog(
     onRemove: (Long) -> Unit,
     onRetry: (Long) -> Unit,
     onCleared: () -> Unit,
+    onClearEpisodeCache: () -> Unit,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
@@ -245,6 +249,29 @@ internal fun SettingsDialog(
                     color = AppColors.Muted
                 )
                 Spacer(Modifier.height(10.dp))
+                Text("外观", style = MaterialTheme.typography.titleMedium, color = AppColors.Ink)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "跟随系统会随手机的深色模式自动切换；车机常年深色也可以固定为深色。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = AppColors.Muted
+                )
+                Spacer(Modifier.height(10.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ThemeModeChip(
+                        label = "跟随系统",
+                        selected = themeMode == ThemeMode.SYSTEM
+                    ) { onThemeModeChange(ThemeMode.SYSTEM) }
+                    ThemeModeChip(
+                        label = "浅色",
+                        selected = themeMode == ThemeMode.LIGHT
+                    ) { onThemeModeChange(ThemeMode.LIGHT) }
+                    ThemeModeChip(
+                        label = "深色",
+                        selected = themeMode == ThemeMode.DARK
+                    ) { onThemeModeChange(ThemeMode.DARK) }
+                }
+                Spacer(Modifier.height(18.dp))
                 SwitchRow(
                     title = "隐藏顶部状态栏",
                     subtitle = "车机建议开启，顶栏不占画面、内容顶到上沿；" +
@@ -377,6 +404,20 @@ internal fun SettingsDialog(
                         CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                     }
                 }
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "节目列表缓存：浏览过的历史月份会存到本地，再选到同一段不再联网；" +
+                        "当前月还在更新，不参与缓存。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = AppColors.Muted
+                )
+                TextButton(onClick = onClearEpisodeCache) {
+                    Text(
+                        "清理节目列表缓存",
+                        color = AppColors.Red,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
 
                 Spacer(Modifier.height(22.dp))
 
@@ -498,6 +539,26 @@ private fun AboutDialog(onBack: () -> Unit) {
         confirmText = "返回",
         onConfirm = onBack,
         dismissText = null
+    )
+}
+
+/** 外观三档选择：胶囊样式与日期选择一致 */
+@Composable
+private fun ThemeModeChip(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    Text(
+        label,
+        style = MaterialTheme.typography.bodyMedium,
+        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+        color = if (selected) Color.White else AppColors.Body,
+        modifier = Modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(if (selected) AppColors.Red else AppColors.Canvas)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 10.dp)
     )
 }
 

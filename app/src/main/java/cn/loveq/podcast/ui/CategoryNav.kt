@@ -229,7 +229,8 @@ private fun SideTool(
             .fillMaxWidth()
             .heightIn(min = 48.dp)
             .clip(RoundedCornerShape(14.dp))
-            .background(Color.White.copy(alpha = 0.6f))
+            // 浅色下是半透明白胶囊，深色下换成卡片色，避免整颗工具项发亮
+            .background(AppColors.Card.copy(alpha = 0.75f))
             .clickable(onClick = onClick)
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically

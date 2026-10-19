@@ -26,6 +26,7 @@ import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -62,10 +63,13 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -185,20 +189,68 @@ fun EpisodeListPane(
             episodeCount > 0 && last >= episodeCount - 6
         }
     }
-    val shouldLoadPrev by remember(startPage) {
+    val shouldLoadPrev by remember(startPage, state.filtering) {
         derivedStateOf {
             val first = listState.layoutInfo.visibleItemsInfo.firstOrNull()?.index ?: 0
-            startPage > 1 && first <= 1
+            // 筛选态的「上一段」是更新的月份，和官网页游标无关
+            (state.filtering || startPage > 1) && first <= 1
         }
     }
-    LaunchedEffect(shouldLoadNext) {
-        if (shouldLoadNext) loadNext()
+    // 刚跳到某个月时列表正停在顶部：这时不能立刻把相邻月份拼进来，
+    // 否则看起来像筛选没生效。
+    var canLoadNewer by remember(state.filtering, state.scrollResetToken) {
+        mutableStateOf(false)
     }
-    LaunchedEffect(shouldLoadPrev) {
-        if (shouldLoadPrev) loadPrevious()
+    // 每个滑动手势最多续接一段：一次下拉连拉好几个月会让人觉得停不下来。
+    // 装载完成后置回 false，等下一次手势再开闸。
+    var canLoadOlder by remember(state.filtering, state.scrollResetToken) {
+        mutableStateOf(false)
     }
-    LaunchedEffect(state.scrollResetToken) {
-        if (state.scrollResetToken > 0) listState.scrollToItem(0)
+    if (state.filtering) {
+        LaunchedEffect(state.filtering, state.scrollResetToken) {
+            // 跳转定位是程序化滚动，别把它当成用户手势；等两帧落定
+            withFrameNanos { }
+            withFrameNanos { }
+            snapshotFlow { listState.isScrollInProgress }.collect { scrolling ->
+                if (!scrolling) return@collect
+                canLoadOlder = true
+                // 要先离开顶部，才允许回顶时接更新的月份
+                if (listState.firstVisibleItemIndex > 0) canLoadNewer = true
+            }
+        }
+        LaunchedEffect(shouldLoadNext, canLoadOlder) {
+            if (shouldLoadNext && canLoadOlder) {
+                canLoadOlder = false
+                loadNext()
+            }
+        }
+        LaunchedEffect(shouldLoadPrev, canLoadNewer) {
+            if (shouldLoadPrev && canLoadNewer) {
+                canLoadNewer = false
+                loadPrevious()
+            }
+        }
+    } else {
+        // 未筛选时仍是原来的整页翻页：一页 26 期，不会出现按月连续拉取的问题
+        LaunchedEffect(shouldLoadNext) {
+            if (shouldLoadNext) loadNext()
+        }
+        LaunchedEffect(shouldLoadPrev) {
+            if (shouldLoadPrev) loadPrevious()
+        }
+    }
+    LaunchedEffect(state.scrollResetToken, state.scrollToId) {
+        if (state.scrollResetToken <= 0) return@LaunchedEffect
+        val target = state.scrollToId
+        val index = target?.let { id -> state.episodes.indexOfFirst { it.id == id } } ?: -1
+        if (index >= 0) {
+            // 节目前面还有「继续收听」「向上加载」两个可选 item，滚动下标要加上它们
+            val leading = (if (lastProgress != null && lastProgress.canResume) 1 else 0) +
+                (if (state.loadingUp) 1 else 0)
+            listState.scrollToItem(index + leading)
+        } else {
+            listState.scrollToItem(0)
+        }
     }
     val haptics = LocalHapticFeedback.current
     val scope = rememberCoroutineScope()
@@ -356,12 +408,28 @@ fun EpisodeListPane(
                 Spacer(Modifier.width(12.dp))
                 Text(
                     buildString {
-                        // 筛选态下官网总期数已经没有意义，说清楚现在看的是哪一段
+                        // 筛选态下官网总期数已经没有意义，说清楚现在看的是哪一段。
+                        // 上下滑过相邻月份后，标题跟着显示实际加载到的范围
                         if (state.filtering) {
-                            append(
-                                if (state.filterMonth == 0) "${state.filterYear} 年"
-                                else "${state.filterYear} 年 ${state.filterMonth} 月"
-                            )
+                            val monthOnly = state.filterMonth != 0
+                            val anchorKey =
+                                if (monthOnly) state.filterYear * 100 + state.filterMonth
+                                else state.filterYear
+                            fun keyOf(e: Episode) = if (monthOnly) e.yearMonth else e.year
+                            fun labelOf(e: Episode) =
+                                if (monthOnly) "${e.year} 年 ${e.month} 月" else "${e.year} 年"
+                            val newest = state.episodes.firstOrNull()
+                            val oldest = state.episodes.lastOrNull()
+                            if (newest != null && oldest != null &&
+                                (keyOf(newest) != anchorKey || keyOf(oldest) != anchorKey)
+                            ) {
+                                append(labelOf(oldest)).append(" – ").append(labelOf(newest))
+                            } else {
+                                append(
+                                    if (monthOnly) "${state.filterYear} 年 ${state.filterMonth} 月"
+                                    else "${state.filterYear} 年"
+                                )
+                            }
                             append(" · ${state.episodes.size} 期")
                         } else {
                             if (archiveCount > 0) append("$archiveCount 期")
@@ -405,7 +473,10 @@ fun EpisodeListPane(
             )
         }
 
-        PullToRefreshBox(
+        RefreshableBox(
+            // 筛选态的顶部手势要留给「加载更新的月份」：再挂下拉刷新会抢同一个手势，
+            // 而且刷新本来就会退出筛选，和当前浏览上下文冲突
+            enabled = !state.filtering,
             isRefreshing = state.refreshing,
             onRefresh = refresh,
             // 纵向 weight(1f) 只能在 Column 作用域里写，留在调用点；
@@ -491,13 +562,7 @@ fun EpisodeListPane(
                                 loading = state.loadingDown || state.jumping,
                                 endReached = state.endReached,
                                 error = state.loadMoreError,
-                                // 筛选态的「到底」是这一段听完了，不是全站到 2003 年
-                                endText = if (state.filtering) {
-                                    if (state.filterMonth == 0) "${state.filterYear} 年就这些"
-                                    else "${state.filterYear} 年 ${state.filterMonth} 月就这些"
-                                } else {
-                                    "已经到底啦 · 2003.06.15"
-                                },
+                                endText = "已经到底啦 · 2003.06.15",
                                 onRetry = loadNext
                             )
                         }
@@ -526,6 +591,26 @@ fun EpisodeListPane(
                 )
             }
         }
+    }
+}
+
+/** 筛选态关掉下拉刷新（手势让给相邻月份加载），其余情况保持原样 */
+@Composable
+private fun RefreshableBox(
+    enabled: Boolean,
+    isRefreshing: Boolean,
+    onRefresh: () -> Unit,
+    modifier: Modifier = Modifier,
+    content: @Composable BoxScope.() -> Unit
+) {
+    if (enabled) {
+        PullToRefreshBox(
+            isRefreshing = isRefreshing,
+            onRefresh = onRefresh,
+            modifier = modifier
+        ) { content() }
+    } else {
+        Box(modifier) { content() }
     }
 }
 

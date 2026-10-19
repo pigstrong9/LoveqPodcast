@@ -6,23 +6,28 @@ import androidx.lifecycle.viewModelScope
 import cn.loveq.podcast.LoveqApp
 import cn.loveq.podcast.data.Category
 import cn.loveq.podcast.data.Episode
+import cn.loveq.podcast.data.EpisodeCacheStore
 import cn.loveq.podcast.data.LoveqParser
 import cn.loveq.podcast.data.PageResult
 import cn.loveq.podcast.data.Progress
 import cn.loveq.podcast.data.RateLimitedException
+import cn.loveq.podcast.data.ThemeMode
 import cn.loveq.podcast.data.shouldAutoResume
 import cn.loveq.podcast.playback.PlaybackEvents
 import cn.loveq.podcast.playback.PlayerConnection
 import cn.loveq.podcast.playback.VolumeBoost
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 data class ListUiState(
     val category: Category = Category.ALL.first(),
@@ -42,16 +47,20 @@ data class ListUiState(
     /** 日期筛选：0 = 未筛选；[filterMonth] 为 0 表示整年 */
     val filterYear: Int = 0,
     val filterMonth: Int = 0,
-    /** 筛选模式下已经翻过该时段的最后一条，往下不会再有匹配 */
+    /** 筛选后已经翻到归档末尾，往下不会再有更早的节目 */
     val filterExhausted: Boolean = false,
     val scrollResetToken: Int = 0,
+    /** 非空的定位目标：列表数据就位后滚动到这一期（用于「继续收听」跳回原处） */
+    val scrollToId: Long? = null,
     val error: String? = null
 ) {
-    /** 是否处于日期筛选态：此时不允许往上翻页，也不该显示官网的总期数 */
+    /** 是否处于日期筛选态：此时按相邻月份/年份加载，也不该显示官网的总期数 */
     val filtering: Boolean get() = filterYear != 0
 
     val endReached: Boolean
-        get() = if (filtering) filterExhausted || (loadedEndPage >= totalPages && !initialLoading)
+        // 筛选态按「月/年」一节一节地加载，页游标不参与判断：
+        // 只有真的翻到归档最早一段才算到底
+        get() = if (filtering) filterExhausted
         else loadedEndPage >= totalPages && !initialLoading
 }
 
@@ -110,6 +119,11 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setAutoResume(on: Boolean) = store.setAutoResume(on)
 
+    /** 外观模式：跟随系统 / 浅色 / 深色 */
+    val themeMode: StateFlow<ThemeMode> = store.themeMode
+
+    fun setThemeMode(mode: ThemeMode) = store.setThemeMode(mode)
+
     fun setBoost(percent: Int) {
         VolumeBoost.apply(percent)
         store.boostPercent = percent
@@ -128,7 +142,30 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
     init {
         loveqApp.indexStore.ensureIndex(repo)
         loadInitial()
+        restoreListPosition()
         autoResumeOnLaunch()
+    }
+
+    /**
+     * 启动时恢复上次浏览的列表位置（分类 + 年月筛选）。
+     *
+     * 用户翻到 2010 年的某个月后退出，再打开时若从最新一期重新开始，
+     * 想找回去要翻几十页。这里在首屏加载完成后把列表定位回上次的时段。
+     */
+    private fun restoreListPosition() {
+        val saved = store.listPosition()
+        if (saved.year == 0) return
+        // 自动续播会把列表定位到正在播的那期，这里不再重复跳
+        if (shouldAutoResume(store.autoResume.value, store.lastId.value?.let(store::get))) return
+        viewModelScope.launch {
+            // 等首屏加载结束，否则会被 jumpToDate 里的 loadJob.cancel 打断
+            state.first { !it.initialLoading }
+            if (saved.categoryId != 0 && saved.categoryId != _state.value.category.id) {
+                Category.ALL.firstOrNull { it.id == saved.categoryId }?.let { switchCategory(it) }
+                state.first { !it.initialLoading }
+            }
+            jumpToDate(saved.year, saved.month)
+        }
     }
 
     /**
@@ -166,9 +203,12 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
                 filterMonth = 0,
                 filterExhausted = false,
                 scrollResetToken = it.scrollResetToken + 1,
+                scrollToId = null,
                 error = null
             )
         }
+        // 换分类后回到该分类的最新一期，上次的筛选位置作废
+        store.setListPosition(category.id, 0, 0)
         loadInitial()
     }
 
@@ -211,6 +251,8 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
         loadJob?.cancel()
         val gen = ++loadGen
         val catId = _state.value.category.id
+        // 退出筛选/重试都意味着回到最新一期，记住的新位置也要一起作废
+        if (clearFilter) store.setListPosition(catId, 0, 0)
         // 被这里打断的跳转/翻页，其 finally 会因为 loadGen 变了而跳过复位标志，
         // 所以「整表替换」必须自己把所有加载标志归零。
         // 漏掉 jumping 的代价最难查：它会永久停 in true，
@@ -342,9 +384,12 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
                         filterYear = 0,
                         filterMonth = 0,
                         filterExhausted = false,
+                        scrollToId = null,
                         error = null
                     )
                 }
+                // 刷新后列表回到最新一期，上次的筛选位置作废
+                store.setListPosition(catId, 0, 0)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -375,10 +420,13 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
     fun loadNextPage() {
         val s = _state.value
         if (s.loadingDown || s.jumping) return
-        // 两种「到底」都要拦：翻完全库，或者筛选态已经翻过那一段。
-        // 之前筛选态把页数闸门整条丢了，于是筛到最旧那一年时 loadedEndPage 已经越过
-        // 全库页数，这里却放行，结果去请求根本不存在的第 N+1 页（失败还会在页脚假报加载失败）
-        if (s.loadedEndPage >= s.totalPages || (s.filtering && s.filterExhausted)) return
+        // 筛选态按相邻月份/年份续接，页游标只服务于未筛选的连续浏览
+        if (s.filtering) {
+            loadAdjacentPeriod(older = true)
+            return
+        }
+        // 翻完全库就停：筛选态不再走这条路径，也就不需要再拿筛选标志兜底
+        if (s.loadedEndPage >= s.totalPages) return
         val catId = s.category.id
         val gen = loadGen
         val next = s.loadedEndPage + 1
@@ -395,33 +443,11 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
                     } else {
                         // 去重兜底：万一页边界重叠，重复 id 会让 LazyColumn 的 key 冲突崩溃
                         val existing = it.episodes.mapTo(HashSet<Long>(it.episodes.size * 2)) { e -> e.id }
-                        val fresh = result.episodes.filterNot { e -> e.id in existing }
-                        val kept = if (it.filtering) {
-                            fresh.filter { e -> matchesFilter(e, it.filterYear, it.filterMonth) }
-                        } else {
-                            fresh
-                        }
-                        // 整页不匹配还不能算翻完：脏日期、或者这一期恰好不在该时段，
-                        // 都会造成中间的空页。只有「一页都不匹配」且「这页最新的一期
-                        // 已经比目标时段更旧」才真的说明越过去了
-                        val granular = it.filterMonth != 0
-                        val filterTarget =
-                            if (granular) it.filterYear * 100 + it.filterMonth else it.filterYear
-                        val tail = result.episodes.lastOrNull { e ->
-                            if (granular) e.year != 0 && e.month != 0 else e.year != 0
-                        }
-                        val tailKey = when {
-                            tail == null -> null
-                            granular -> tail.yearMonth
-                            else -> tail.year
-                        }
-                        val pastTarget = tailKey != null && tailKey < filterTarget
                         it.copy(
-                            episodes = it.episodes + kept,
+                            episodes = it.episodes + result.episodes.filterNot { e -> e.id in existing },
                             loadedEndPage = next,
                             totalPages = result.totalPages,
-                            loadingDown = false,
-                            filterExhausted = it.filtering && kept.isEmpty() && pastTarget
+                            loadingDown = false
                         )
                     }
                 }
@@ -437,8 +463,12 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
 
     fun loadPreviousPage() {
         val s = _state.value
-        // 筛选态下列表被裁成某个月/某一年，往上拼官网的更新页会直接混进不匹配的期
-        if (s.loadingUp || s.jumping || s.startPage <= 1 || s.filtering) return
+        if (s.loadingUp || s.jumping) return
+        if (s.filtering) {
+            loadAdjacentPeriod(older = false)
+            return
+        }
+        if (s.startPage <= 1) return
         val catId = s.category.id
         val gen = loadGen
         val prev = s.startPage - 1
@@ -468,27 +498,184 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** 日期筛选的匹配判断；未筛选时全部通过 */
-    private fun matchesFilter(e: Episode, filterYear: Int, filterMonth: Int): Boolean = when {
-        filterYear == 0 -> true
-        filterMonth == 0 -> e.year == filterYear
-        else -> e.yearMonth == filterYear * 100 + filterMonth
+    /**
+     * 筛选态继续往相邻的月份/年份加载。
+     *
+     * 筛选只是一个起点：往下滑接更早的一个月，往上滑接更新的一个月（整年筛选时单位是年）。
+     * 边界从列表首尾**实际的那一期**算，而不是一直用最初选中的时段 ——
+     * 连续滑过几个月之后仍然接得上。
+     */
+    private fun loadAdjacentPeriod(older: Boolean) {
+        val s = _state.value
+        if (!s.filtering) return
+        if (older && (s.loadingDown || s.filterExhausted)) return
+        if (!older && s.loadingUp) return
+        val catId = s.category.id
+        val gen = loadGen
+        var target = boundaryPeriod(s, older) ?: return
+        val (curYear, curMonth) = currentPeriod()
+
+        viewModelScope.launch {
+            _state.update {
+                if (older) it.copy(loadingDown = true, loadMoreError = false)
+                else it.copy(loadingUp = true)
+            }
+            try {
+                var found: List<Episode>? = null
+                var atArchiveEnd = false
+                var toSave: Pair<Pair<Int, Int>, PeriodResult>? = null
+                var skipped = 0
+                while (skipped < MAX_EMPTY_PERIODS) {
+                    if (loadGen != gen) return@launch
+                    if (!withinPeriodBounds(target, older, curYear, curMonth)) {
+                        if (older) atArchiveEnd = true
+                        break
+                    }
+                    val hit = cachedPeriod(catId, target.first, target.second)
+                    if (hit != null) {
+                        found = hit.episodes
+                        atArchiveEnd = older && isArchiveStart(target.first, target.second)
+                        break
+                    }
+                    val result = fetchPeriod(catId, target.first, target.second)
+                    if (result.episodes.isNotEmpty()) {
+                        found = result.episodes
+                        atArchiveEnd = older &&
+                            (result.atArchiveEnd || isArchiveStart(target.first, target.second))
+                        toSave = target to result
+                        break
+                    }
+                    // 这个月/年没有节目（停更、换季）：继续往前找，不要在这里断掉
+                    if (result.atArchiveEnd) {
+                        atArchiveEnd = true
+                        break
+                    }
+                    target = shiftPeriod(target.first, target.second, older)
+                    skipped++
+                }
+                if (loadGen != gen) return@launch
+                val fresh = found
+                if (fresh != null) {
+                    _state.update {
+                        val existing = it.episodes.mapTo(HashSet<Long>(it.episodes.size * 2)) { e -> e.id }
+                        val added = fresh.filterNot { e -> e.id in existing }
+                        it.copy(
+                            episodes = if (older) it.episodes + added else added + it.episodes,
+                            loadingDown = if (older) false else it.loadingDown,
+                            loadingUp = if (older) it.loadingUp else false,
+                            filterExhausted = if (older) atArchiveEnd else it.filterExhausted,
+                            loadMoreError = if (older) false else it.loadMoreError
+                        )
+                    }
+                    // 整段落盘：下次再滑到这里（或直接选这个月）不再联网
+                    toSave?.let { (period, result) ->
+                        withContext(Dispatchers.IO) {
+                            loveqApp.episodeCache.save(
+                                catId, period.first, period.second,
+                                result.episodes, result.totalPages
+                            )
+                        }
+                    }
+                } else {
+                    _state.update {
+                        if (older) it.copy(loadingDown = false, filterExhausted = atArchiveEnd)
+                        else it.copy(loadingUp = false)
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (loadGen == gen) {
+                    _state.update {
+                        if (older) it.copy(loadingDown = false, loadMoreError = true)
+                        else it.copy(loadingUp = false)
+                    }
+                    if (e is RateLimitedException) PlaybackEvents.report(rateLimitText())
+                }
+            }
+        }
+    }
+
+    /** 列表首/尾那一期所在的时段往相邻方向挪一格；年筛选的单位是年 */
+    private fun boundaryPeriod(s: ListUiState, older: Boolean): Pair<Int, Int>? {
+        val yearOnly = s.filterMonth == 0
+        val usable: (Episode) -> Boolean =
+            if (yearOnly) ({ e -> e.year != 0 }) else ({ e -> e.year != 0 && e.month != 0 })
+        val edge = if (older) s.episodes.lastOrNull(usable) else s.episodes.firstOrNull(usable)
+        val year = edge?.year ?: s.filterYear
+        if (year == 0) return null
+        val month = if (yearOnly) 0 else (edge?.month ?: s.filterMonth)
+        return shiftPeriod(year, month, older)
+    }
+
+    private fun shiftPeriod(year: Int, month: Int, older: Boolean): Pair<Int, Int> {
+        if (month == 0) return (year + if (older) -1 else 1) to 0
+        return if (older) {
+            if (month <= 1) (year - 1) to 12 else year to (month - 1)
+        } else {
+            if (month >= 12) (year + 1) to 1 else year to (month + 1)
+        }
+    }
+
+    private fun withinPeriodBounds(
+        target: Pair<Int, Int>,
+        older: Boolean,
+        curYear: Int,
+        curMonth: Int
+    ): Boolean {
+        val (y, m) = target
+        return if (older) {
+            if (m == 0) y >= ARCHIVE_START_YEAR
+            else y * 100 + m >= ARCHIVE_START_YEAR * 100 + ARCHIVE_START_MONTH
+        } else {
+            if (m == 0) y <= curYear
+            else y * 100 + m <= curYear * 100 + curMonth
+        }
+    }
+
+    private fun isArchiveStart(year: Int, month: Int): Boolean =
+        if (month == 0) year <= ARCHIVE_START_YEAR
+        else year * 100 + month <= ARCHIVE_START_YEAR * 100 + ARCHIVE_START_MONTH
+
+    private fun currentPeriod(): Pair<Int, Int> {
+        val cal = java.util.Calendar.getInstance()
+        return cal.get(java.util.Calendar.YEAR) to (cal.get(java.util.Calendar.MONTH) + 1)
     }
 
     /**
-     * 定位到某年 / 某年某月，并把列表收敛成那一段。
+     * 读磁盘上已加载过的整月/整年。
      *
-     * 旧实现是从第 1 页往后逐页找：跳到 2006 年要串起 40 多页、每页之间还要让
-     * 200ms 限速，等十几秒很正常 —— 这就是「点完切换很慢」的根因。
-     * 列表按日期新→旧排布，所以「页内最新一期」随页码单调不增，于是：
-     *  · 粤语节目有全库本地索引，位置和页码可以直接换算，通常 1～2 次请求就命中；
-     *  · 其余分类退化成二分查找，95 页最多 7 次请求。
+     * 当前月（年）还在更新，不能信任缓存；历史时段才直接返回。
+     * 只存过整年时也能拆出某个月，避免为了一个月再把整年翻一遍。
      */
-    fun jumpToDate(year: Int, month: Int = 0) {
-        if (_state.value.jumping) return
-        loadJob?.cancel()
-        val gen = ++loadGen
-        val catId = _state.value.category.id
+    private suspend fun cachedPeriod(catId: Int, year: Int, month: Int): EpisodeCacheStore.Entry? {
+        if (!loveqApp.episodeCache.isStable(year, month)) return null
+        return withContext(Dispatchers.IO) {
+            loveqApp.episodeCache.load(catId, year, month) ?: if (month > 0) {
+                loveqApp.episodeCache.load(catId, year, 0)?.let { yearEntry ->
+                    val inMonth = yearEntry.episodes.filter { it.yearMonth == year * 100 + month }
+                    if (inMonth.isEmpty()) null
+                    else EpisodeCacheStore.Entry(inMonth, yearEntry.totalPages, yearEntry.savedAt)
+                }
+            } else {
+                null
+            }
+        }
+    }
+
+    private data class PeriodResult(
+        val episodes: List<Episode>,
+        val totalPages: Int,
+        val atArchiveEnd: Boolean
+    )
+
+    /**
+     * 从官网取某个整月/整年。
+     *
+     * 列表按日期新→旧排布，所以「页内最新一期」随页码单调不增，可以用二分定位边界页：
+     * 粤语节目有全库本地索引，通常 1～2 次请求就能命中；其余分类最多 7 次。
+     */
+    private suspend fun fetchPeriod(catId: Int, year: Int, month: Int): PeriodResult {
         val granular = month > 0
         val target = if (granular) year * 100 + month else year
         val key: (Episode) -> Int = if (granular) Episode::yearMonth else Episode::year
@@ -497,7 +684,79 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
         // 当成页首会把二分边界甩到很后面，当成页尾会让这一段被提前判定结束
         val usable: (Episode) -> Boolean =
             if (granular) ({ e -> e.year != 0 && e.month != 0 }) else ({ e -> e.year != 0 })
-        val label = if (granular) "$year 年 $month 月" else "$year 年"
+
+        var totalPages = _state.value.totalPages
+        suspend fun pageAt(p: Int): PageResult {
+            // 缓存命中也要校准：state 里的 totalPages 可能是离线兜底写的 1，
+            // 只有真实页里的值才能把它纠正过来
+            cached(catId, p)?.let { hit ->
+                if (hit.totalPages != totalPages) totalPages = hit.totalPages
+                return hit
+            }
+            // 这里不再额外 sleep：二分最多 7 次请求，而且用户正盯着屏幕等结果。
+            // 请求间隔交给 LoveqRepository 里的全局闸门统一兜底，够客气了
+            return repo.loadPage(p, catId).also { r ->
+                cache(catId, p, r)
+                if (r.totalPages != totalPages) totalPages = r.totalPages
+            }
+        }
+
+        // 先把总页数校准再定搜索区间。断网启动过一次之后 state 里是兜底的 1，
+        // 直接拿它当上界的话区间就是 [1,1]，跳任何年份都只会「没有找到」，
+        // 而且永远学不乖。第 1 页通常早就在缓存里，这一步一般是零成本
+        pageAt(1)
+        // 索引只用来加速：换算出候选页交给 findTargetPage，它会用真实页首校验后才收窄
+        val guess = if (catId != Category.CANTONESE_ID) {
+            null
+        } else {
+            val idx = index.value
+            val pos = if (idx.isEmpty()) -1
+            else idx.indexOfFirst { usable(it) && key(it) <= target }
+            if (pos < 0) null else pos / LoveqParser.PAGE_SIZE + 1
+        }
+        val hitPage = findTargetPage(
+            target = target,
+            firstPage = 1,
+            lastPage = totalPages,
+            guess = guess,
+            headKey = { pageAt(it).episodes.firstOrNull(usable)?.let(key) }
+        )
+        // 归档里根本没有这一段，基本都是已经越过最早一期
+        if (hitPage == 0) return PeriodResult(emptyList(), totalPages, atArchiveEnd = true)
+
+        // 目标那一段的开头可能正好压在上页末尾，所以从上一页开始收
+        val from = (hitPage - 1).coerceAtLeast(1)
+        val matched = ArrayList<Episode>()
+        var page = from
+        var atEnd = false
+        while (page <= totalPages) {
+            val r = pageAt(page)
+            matched += r.episodes.filter { key(it) == target }
+            // 页尾也只认日期可用的一期：脏日期会让「已经越过目标」凭空成立，
+            // 于是这一段被悄悄截短
+            val last = r.episodes.lastOrNull(usable)
+            if (last == null || key(last) < target) break
+            page++
+        }
+        // 一路收到最后一页都没越过目标 = 这一段就是归档的尾巴
+        if (page > totalPages) atEnd = true
+        val seen = HashSet<Long>(matched.size * 2)
+        return PeriodResult(matched.filter { seen.add(it.id) }, totalPages, atEnd)
+    }
+
+    /**
+     * 定位到某年 / 某年某月。
+     *
+     * 已经加载过的历史时段直接从磁盘读，不再联网 —— 节目列表只会新增，
+     * 历史月份的内容不会变；当前月（年）还在更新，仍然走官网。
+     * 没缓存时才去官网二分定位，逻辑见 [fetchPeriod]。
+     */
+    fun jumpToDate(year: Int, month: Int = 0, scrollToId: Long? = null) {
+        if (_state.value.jumping) return
+        loadJob?.cancel()
+        val gen = ++loadGen
+        val catId = _state.value.category.id
+        val label = if (month > 0) "$year 年 $month 月" else "$year 年"
 
         loadJob = viewModelScope.launch {
             _state.update {
@@ -510,91 +769,45 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
                     loadMoreError = false
                 )
             }
-            var totalPages = _state.value.totalPages
-            suspend fun pageAt(p: Int): PageResult {
-                // 缓存命中也要校准：state 里的 totalPages 可能是离线兜底写的 1，
-                // 只有真实页里的值才能把它纠正过来
-                cached(catId, p)?.let { hit ->
-                    if (hit.totalPages != totalPages) totalPages = hit.totalPages
-                    return hit
-                }
-                // 这里不再额外 sleep：二分最多 7 次请求，而且用户正盯着屏幕等结果。
-                // 请求间隔交给 LoveqRepository 里的全局闸门统一兜底，够客气了
-                return repo.loadPage(p, catId).also { r ->
-                    cache(catId, p, r)
-                    if (r.totalPages != totalPages) totalPages = r.totalPages
-                }
-            }
             try {
-                // 先把总页数校准再定搜索区间。断网启动过一次之后 state 里是兜底的 1，
-                // 直接拿它当上界的话区间就是 [1,1]，跳任何年份都只会「没有找到」，
-                // 而且永远学不乖。第 1 页通常早就在缓存里，这一步一般是零成本
-                pageAt(1)
-                // 索引只用来加速：换算出候选页交给 findTargetPage，它会用真实页首校验后才收窄
-                val guess = if (catId != Category.CANTONESE_ID) {
-                    null
+                val cached = cachedPeriod(catId, year, month)
+                val result = if (cached != null) {
+                    PeriodResult(
+                        episodes = cached.episodes,
+                        totalPages = cached.totalPages,
+                        atArchiveEnd = isArchiveStart(year, month)
+                    )
                 } else {
-                    val idx = index.value
-                    val pos = if (idx.isEmpty()) -1
-                    else idx.indexOfFirst { usable(it) && key(it) <= target }
-                    if (pos < 0) null else pos / LoveqParser.PAGE_SIZE + 1
+                    fetchPeriod(catId, year, month)
                 }
-                val hitPage = findTargetPage(
-                    target = target,
-                    firstPage = 1,
-                    lastPage = totalPages,
-                    guess = guess,
-                    headKey = { pageAt(it).episodes.firstOrNull(usable)?.let(key) }
-                )
                 if (loadGen != gen) return@launch
-                if (hitPage == 0) {
-                    // 把这次学到的真实页数留下。不写回去的话，下一次跳转用的还是
-                    // 那个错的区间，用户反复点也只是反复看到同一句「没有找到」
-                    _state.update { it.copy(totalPages = totalPages) }
-                    PlaybackEvents.report("没有找到 $label 的节目")
-                    return@launch
-                }
-
-                // 目标那一段的开头可能正好压在上页末尾，所以从上一页开始收
-                val from = (hitPage - 1).coerceAtLeast(1)
-                val matched = ArrayList<Episode>()
-                var page = from
-                var exhausted = false
-                while (page <= totalPages) {
-                    val r = pageAt(page)
-                    matched += r.episodes.filter { key(it) == target }
-                    // 页尾也只认日期可用的一期：脏日期会让「已经越过目标」凭空成立，
-                    // 于是这一段被悄悄截短，界面上还写着「就这些」
-                    val last = r.episodes.lastOrNull(usable)
-                    if (last == null || key(last) < target) {
-                        exhausted = true
-                        break
-                    }
-                    page++
-                }
-                // 一路收到最后一页都没越过目标 = 这一段就是归档的尾巴。
-                // 漏了这条，loadedEndPage 会停在「全库页数 + 1」而 filterExhausted 是 false，
-                // 列表到底之后还会去请求根本不存在的第 N+1 页
-                if (page > totalPages) exhausted = true
-                if (loadGen != gen) return@launch
-                val seen = HashSet<Long>(matched.size * 2)
-                val list = matched.filter { seen.add(it.id) }
-                if (list.isEmpty()) {
-                    _state.update { it.copy(totalPages = totalPages) }
+                if (result.episodes.isEmpty()) {
+                    _state.update { it.copy(totalPages = result.totalPages) }
                     PlaybackEvents.report("没有找到 $label 的节目")
                     return@launch
                 }
                 _state.update {
                     it.copy(
-                        episodes = list,
-                        startPage = from,
-                        loadedEndPage = page,
-                        totalPages = totalPages,
+                        episodes = result.episodes,
+                        // 筛选态一节一节加载，页游标不参与；给个一致值即可
+                        startPage = 1,
+                        loadedEndPage = 1,
+                        totalPages = result.totalPages,
                         filterYear = year,
                         filterMonth = month,
-                        filterExhausted = exhausted,
-                        scrollResetToken = it.scrollResetToken + 1
+                        filterExhausted = result.atArchiveEnd || isArchiveStart(year, month),
+                        scrollResetToken = it.scrollResetToken + 1,
+                        scrollToId = scrollToId
                     )
+                }
+                // 记住这次浏览的时段，下次打开应用直接回到这里
+                store.setListPosition(catId, year, month)
+                if (cached == null) {
+                    withContext(Dispatchers.IO) {
+                        loveqApp.episodeCache.save(
+                            catId, year, month, result.episodes, result.totalPages
+                        )
+                    }
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -655,8 +868,45 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
         store.get(id)?.let { connection.playQueue(listOf(Episode(id, it.date, it.title)), 0) }
     }
 
+    /**
+     * 继续收听上次那期：先把列表定位到那一期所在的年月并滚到它，
+     * 再开始播放。否则听 2010 年的节目时，列表还停在最新的 2026 年，
+     * 想找到正在播的这一期得翻几十页。
+     */
     fun resumeLast() {
-        lastId.value?.let { playEpisodeById(it) }
+        val id = lastId.value ?: return
+        moveListToEpisode(id)
+        playEpisodeById(id)
+    }
+
+    /** 把列表定位到某一期所在的年月，列表数据就位后滚动到它 */
+    private fun moveListToEpisode(id: Long) {
+        val inList = _state.value.episodes.firstOrNull { it.id == id }
+        val inIndex = if (inList == null) index.value.firstOrNull { it.id == id } else null
+        val episode = inList ?: inIndex
+            ?: store.get(id)?.let { Episode(id, it.date, it.title) }
+            ?: return
+        if (episode.year == 0) return
+        val s = _state.value
+        if (s.filterYear == episode.year && s.filterMonth == episode.month) {
+            // 已经在同一时段，直接滚到那一期
+            _state.update {
+                it.copy(
+                    scrollResetToken = it.scrollResetToken + 1,
+                    scrollToId = id
+                )
+            }
+            return
+        }
+        viewModelScope.launch {
+            // 主归档的节目不在当前分类时先切回粤语节目，
+            // 否则 jumpToDate 会在错的分类里找，最后只报一句「没有找到」
+            if (inIndex != null && _state.value.category.id != Category.CANTONESE_ID) {
+                Category.ALL.firstOrNull { it.id == Category.CANTONESE_ID }?.let { switchCategory(it) }
+                state.first { !it.initialLoading }
+            }
+            jumpToDate(episode.year, episode.month, scrollToId = id)
+        }
     }
 
     /** 离线缓存条目：列表徽标与缓存页共用这一份状态 */
@@ -676,11 +926,27 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
     fun seekForward() = connection.seekForward()
     fun setSpeed(value: Float) = connection.setSpeed(value)
 
+    /** 清空已加载的节目列表（磁盘上的月份缓存 + 本次进程里的页缓存） */
+    fun clearEpisodeCache() {
+        pageCache.clear()
+        viewModelScope.launch(Dispatchers.IO) {
+            loveqApp.episodeCache.clear()
+            PlaybackEvents.report("节目列表缓存已清理")
+        }
+    }
+
     override fun onCleared() {
         connection.release()
     }
 
     private companion object {
         const val QUEUE_AHEAD = 50
+
+        /** 归档最早一期是 2003.06.15，再往前就没有更早的月份了 */
+        const val ARCHIVE_START_YEAR = 2003
+        const val ARCHIVE_START_MONTH = 6
+
+        /** 相邻月份没有节目时最多再尝试几个时段，避免停更分类连续打一串请求 */
+        const val MAX_EMPTY_PERIODS = 3
     }
 }

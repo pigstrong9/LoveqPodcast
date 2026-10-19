@@ -2,7 +2,9 @@ package cn.loveq.podcast.ui
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -10,13 +12,20 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.graphics.toArgb
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
 import cn.loveq.podcast.LoveqApp
+import cn.loveq.podcast.data.ThemeMode
 import cn.loveq.podcast.ui.theme.LoveqTheme
+import cn.loveq.podcast.ui.theme.loveqWindowBackground
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -32,16 +41,28 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         applyHighRefreshRate()
         enableEdgeToEdge(
-            statusBarStyle = SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT),
-            navigationBarStyle = SystemBarStyle.light(Color.TRANSPARENT, Color.TRANSPARENT)
+            // auto：浅色模式用深色图标，深色模式自动换成浅色图标
+            statusBarStyle = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.auto(Color.TRANSPARENT, Color.TRANSPARENT)
         )
+        // 主题偏好从第一帧就生效：系统深色但用户选了浅色时，别先闪一下深色窗口
+        applyWindowChrome(effectiveDark(store.themeMode.value))
         // 订阅而不是只在 onCreate 读一次：设置里拨动开关要立刻生效，不该要求重启应用
         lifecycleScope.launch { store.immersive.collect(::applyStatusBar) }
         // 启动静默检查：失败不出声、不写持久状态（见 UpdateCenter.check 的 manual 参数）。
         // 有新版时设置入口和「关于」行会出现红点，不打断用户收听
         lifecycleScope.launch { updates.check(manual = false) }
         setContent {
-            LoveqTheme {
+            val themeMode by store.themeMode.collectAsStateWithLifecycle()
+            // 系统深浅色照常订阅：跟随系统档要实时响应，固定档则忽略
+            val systemDark = isSystemInDarkTheme()
+            val dark = when (themeMode) {
+                ThemeMode.SYSTEM -> systemDark
+                ThemeMode.LIGHT -> false
+                ThemeMode.DARK -> true
+            }
+            LoveqTheme(darkTheme = dark) {
+                LaunchedEffect(dark) { applyWindowChrome(dark) }
                 AppScreen(onRequestNotificationPermission = ::requestNotificationPermissionIfNeeded)
             }
         }
@@ -69,6 +90,24 @@ class MainActivity : ComponentActivity() {
         }
         if (hidden) controller.hide(WindowInsetsCompat.Type.statusBars())
         else controller.show(WindowInsetsCompat.Type.statusBars())
+    }
+
+    /** 主题偏好 + 系统当前值换算成实际深浅色（窗口底色与系统栏图标都用它） */
+    private fun effectiveDark(mode: ThemeMode): Boolean = when (mode) {
+        ThemeMode.SYSTEM ->
+            (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+                Configuration.UI_MODE_NIGHT_YES
+        ThemeMode.LIGHT -> false
+        ThemeMode.DARK -> true
+    }
+
+    /** 系统栏图标和窗口底色一起切，避免设置里换外观时露出旧底色 */
+    private fun applyWindowChrome(dark: Boolean) {
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            isAppearanceLightStatusBars = !dark
+            isAppearanceLightNavigationBars = !dark
+        }
+        window.setBackgroundDrawable(ColorDrawable(loveqWindowBackground(dark).toArgb()))
     }
 
     /** 弹窗、切后台等场景会重置沉浸标记，焦点回来时按当前设置重新应用 */

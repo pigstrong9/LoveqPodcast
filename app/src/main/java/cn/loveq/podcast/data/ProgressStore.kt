@@ -8,11 +8,28 @@ import kotlinx.coroutines.flow.StateFlow
 import org.json.JSONObject
 
 /**
+ * 上次浏览的列表位置：分类 + 年月筛选。
+ * year 为 0 表示当时没有筛选（列表停在最新一期）。
+ */
+data class ListPosition(val categoryId: Int, val year: Int, val month: Int)
+
+/** 外观模式：跟随系统 / 始终浅色 / 始终深色 */
+enum class ThemeMode(val storageValue: Int) {
+    SYSTEM(0),
+    LIGHT(1),
+    DARK(2);
+
+    companion object {
+        fun fromStorage(value: Int): ThemeMode =
+            values().firstOrNull { it.storageValue == value } ?: SYSTEM
+    }
+}
+
+/**
  * 播放进度与设置，全部存本地 SharedPreferences，无任何账号体系。
  * 进度按节目 id 记录：positionMs / durationMs / done / 标题 / 日期。
  */
 class ProgressStore(context: Context) {
-
     private val prefs: SharedPreferences =
         context.getSharedPreferences("loveq_progress", Context.MODE_PRIVATE)
 
@@ -63,6 +80,22 @@ class ProgressStore(context: Context) {
     fun setAutoResume(on: Boolean) {
         _autoResume.value = on
         persist(prefs.edit().putBoolean(KEY_AUTO_RESUME, on))
+    }
+
+    /**
+     * 外观模式，默认跟随系统。
+     *
+     * 车机常年深色、手机可能白天浅色，所以给了「始终浅色/始终深色」两个手动档；
+     * 用 StateFlow 暴露，切换后界面立刻重组，不必重启。
+     */
+    private val _themeMode = MutableStateFlow(
+        ThemeMode.fromStorage(prefs.getInt(KEY_THEME_MODE, ThemeMode.SYSTEM.storageValue))
+    )
+    val themeMode: StateFlow<ThemeMode> = _themeMode
+
+    fun setThemeMode(mode: ThemeMode) {
+        _themeMode.value = mode
+        persist(prefs.edit().putInt(KEY_THEME_MODE, mode.storageValue))
     }
 
     init {
@@ -188,6 +221,22 @@ class ProgressStore(context: Context) {
         get() = prefs.getInt(KEY_BOOST, 100)
         set(value) = persist(prefs.edit().putInt(KEY_BOOST, value))
 
+    /** 上次浏览的列表位置，下次启动时据此把列表定位回原处 */
+    fun listPosition(): ListPosition = ListPosition(
+        categoryId = prefs.getInt(KEY_LIST_CATEGORY, 0),
+        year = prefs.getInt(KEY_LIST_YEAR, 0),
+        month = prefs.getInt(KEY_LIST_MONTH, 0)
+    )
+
+    fun setListPosition(categoryId: Int, year: Int, month: Int) {
+        persist(
+            prefs.edit()
+                .putInt(KEY_LIST_CATEGORY, categoryId)
+                .putInt(KEY_LIST_YEAR, year)
+                .putInt(KEY_LIST_MONTH, month)
+        )
+    }
+
     private companion object {
         const val KEY_POS = "pos_"
         const val KEY_DUR = "dur_"
@@ -199,6 +248,10 @@ class ProgressStore(context: Context) {
         const val KEY_BOOST = "boost"
         const val KEY_IMMERSIVE = "immersive"
         const val KEY_AUTO_RESUME = "auto_resume"
+        const val KEY_THEME_MODE = "theme_mode"
+        const val KEY_LIST_CATEGORY = "list_category"
+        const val KEY_LIST_YEAR = "list_year"
+        const val KEY_LIST_MONTH = "list_month"
         const val DONE_EPSILON = 30_000L
 
         /**
