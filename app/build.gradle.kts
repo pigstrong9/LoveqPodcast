@@ -20,8 +20,8 @@ android {
         applicationId = "cn.loveq.podcast"
         minSdk = 24
         targetSdk = 35
-        versionCode = 13
-        versionName = "1.6.5"
+        versionCode = 27
+        versionName = "1.7"
     }
 
     signingConfigs {
