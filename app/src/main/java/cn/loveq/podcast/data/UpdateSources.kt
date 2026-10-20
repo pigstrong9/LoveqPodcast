@@ -29,6 +29,9 @@ internal object UpdateSources {
 
     /** 取 APK 资产。拼接后形如 https://github.com/.../releases/download/<tag>/<asset> */
     val ASSET = listOf(
+        // 2026-10-20 实测：v1.7 全量 4.59MB / 5.76s，sha256 与 Release 一致。
+        // 它不代理 api.github.com，所以只放资产源
+        "https://gh.monlor.com/",
         // 镜像优先：实测直连 github.com 只有约 1/3 成功率，且失败要等约 21 秒超时
         "https://gh-proxy.com/",
         "https://cdn.gh-proxy.com/",
