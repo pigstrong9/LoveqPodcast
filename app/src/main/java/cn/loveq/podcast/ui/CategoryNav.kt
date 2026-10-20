@@ -117,7 +117,7 @@ fun Sidebar(
         ) {
             AppLogo(38.dp, 11.dp)
             Spacer(Modifier.width(10.dp))
-            BrandTitle("FM97.4 · 2003 至今", Modifier.width(168.dp))
+            BrandTitle("Hugo&阿智 · 2003 至今", Modifier.width(168.dp))
         }
 
         Text(
@@ -275,7 +275,7 @@ fun PhoneHeader(
     ) {
         AppLogo(36.dp, 10.dp)
         Spacer(Modifier.width(10.dp))
-        BrandTitle("FM97.4 珠江经济台", Modifier.weight(1f))
+        BrandTitle("Hugo&阿智", Modifier.weight(1f))
         IconTool(Icons.Filled.Search, "搜索", onSearch)
         // 年份入口挪进了列表本体（点年份数字），顶栏不再常驻一个日历按钮
         IconTool(Icons.Filled.Settings, "设置", onCache, dot = showUpdateDot)

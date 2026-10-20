@@ -802,6 +802,9 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 // 记住这次浏览的时段，下次打开应用直接回到这里
                 store.setListPosition(catId, year, month)
+                // 月份跳转至少再带上前一个月：最新月份往往只有几集，
+                // 单独一屏会显得空，换个月份也只看到零散几期
+                if (month > 0) loadAdjacentPeriod(older = true)
                 if (cached == null) {
                     withContext(Dispatchers.IO) {
                         loveqApp.episodeCache.save(

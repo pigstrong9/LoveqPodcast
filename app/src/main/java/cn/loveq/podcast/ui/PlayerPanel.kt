@@ -4,6 +4,7 @@ package cn.loveq.podcast.ui
 
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.animateFloatAsState
@@ -14,6 +15,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -49,8 +51,12 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -58,8 +64,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.onSizeChanged
@@ -79,6 +88,8 @@ import cn.loveq.podcast.R
 import cn.loveq.podcast.playback.VolumeBoost
 import cn.loveq.podcast.ui.theme.AppColors
 import kotlin.math.roundToInt
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 
 internal val SPEED_OPTIONS = listOf(0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f, 2.5f, 3.0f)
 
@@ -147,44 +158,47 @@ fun PlayerSidePane(
     topInset: WindowInsets = WindowInsets(0.dp, 0.dp, 0.dp, 0.dp),
     modifier: Modifier = Modifier
 ) {
-    Column(
-        modifier
+    SwipeCollapsibleSheet(
+        onCollapse = onCollapse,
+        modifier = modifier
             // windowInsetsPadding 必须在 fillMaxHeight 之前：反过来写的话
             // fillMaxHeight 会按整栏高度定死，内层只剩「栏高 − 状态栏高」，
             // 底部空出一条状态栏高度的画布色死区，收起手柄也会被挤下去、顶部点不动。
             .windowInsetsPadding(topInset)
             .fillMaxHeight()
             .background(AppColors.Player)
-    ) {
-        SheetHandle(onCollapse = onCollapse)
-        PlayerPanel(
-            title = title,
-            date = date,
-            isPlaying = isPlaying,
-            positionMs = positionMs,
-            durationMs = durationMs,
-            speed = speed,
-            boost = boost,
-            onToggle = onToggle,
-            onSeekTo = onSeekTo,
-            onSeekBack = onSeekBack,
-            onSeekForward = onSeekForward,
-            onSpeed = onSpeed,
-            onBoost = onBoost,
-            onRequestTuning = onRequestTuning,
-            tuningVisible = tuningVisible,
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .padding(start = 26.dp, end = 26.dp, bottom = 10.dp)
-        )
+    ) { handle ->
+        Column(Modifier.fillMaxSize()) {
+            handle()
+            PlayerPanel(
+                title = title,
+                date = date,
+                isPlaying = isPlaying,
+                positionMs = positionMs,
+                durationMs = durationMs,
+                speed = speed,
+                boost = boost,
+                onToggle = onToggle,
+                onSeekTo = onSeekTo,
+                onSeekBack = onSeekBack,
+                onSeekForward = onSeekForward,
+                onSpeed = onSpeed,
+                onBoost = onBoost,
+                onRequestTuning = onRequestTuning,
+                tuningVisible = tuningVisible,
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .padding(start = 26.dp, end = 26.dp, bottom = 10.dp)
+            )
+        }
     }
 }
 
 /**
  * 窄屏（竖屏 / 分屏半幅）：全屏播放面板。
- * 收起只有「点顶部小横条」这一条路（外加返回键），不做任何拖拽 ——
- * 拖动会和进度条等控件的手势打架，收益不值这个风险。
+ * 收起可以点顶部小横条，也可以按住横条下拉；拖拽手势只挂在横条上，
+ * 不会和进度条、封面等控件抢事件。
  * 横屏（宽 > 高，车机全屏播放就是这种）时改用左右分栏：封面在左、控件在右。
  */
 @Composable
@@ -340,7 +354,7 @@ private fun LandscapePlayerContent(
 
 /**
  * 全屏播放面板的宿主：全屏 Dialog + 顶部小横条。
- * 面板本身不参与任何手势识别，所以拖进度条、拖任何控件都不会误触收起。
+ * 拖拽收起只挂在横条上，面板本体不参与手势，所以拖进度条、拖任何控件都不会误触收起。
  *
  * topInset 排在 clip/background 之前：状态栏图标是全窗口共用的深色，深色卡片要是
  * 画到状态栏底下，那半截图标就看不见。让卡片整体从状态栏下方起画，底下露出的还是
@@ -356,8 +370,9 @@ private fun FullScreenPlayerDialog(
         onDismissRequest = onClose,
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
-        Box(
-            Modifier
+        SwipeCollapsibleSheet(
+            onCollapse = onClose,
+            modifier = Modifier
                 .fillMaxSize()
                 .windowInsetsPadding(topInset)
                 .padding(top = CARD_TOP_MARGIN)
@@ -370,9 +385,9 @@ private fun FullScreenPlayerDialog(
                     )
                 )
                 .background(AppColors.Player)
-        ) {
+        ) { handle ->
             Column(Modifier.fillMaxSize()) {
-                SheetHandle(onCollapse = onClose)
+                handle()
                 Box(Modifier.weight(1f).fillMaxWidth()) { panel() }
             }
         }
@@ -385,17 +400,132 @@ private val CARD_TOP_MARGIN = 10.dp
 /** 卡片顶部圆角（iOS 风格的大圆角） */
 private val CARD_CORNER = 28.dp
 
+/** 下拉收起的判定：拖过高度的 18%（不少于 72dp）或向下甩得够快 */
+private const val DRAG_DISMISS_FRACTION = 0.18f
+private val DRAG_DISMISS_MIN = 72.dp
+private val DRAG_DISMISS_FLING = 900.dp
+
+/** 拖动全程的缩小/变淡幅度 */
+private const val DRAG_SCALE_DROP = 0.08f
+private const val DRAG_ALPHA_DROP = 0.55f
+
 /**
- * 顶部小横条：整条顶部区域（≥44dp 高）都可点，点一下即收起。
- * 这是全屏面板唯一的收起入口，刻意不叠任何拖拽识别器。
- * 光秃一条 4dp 横线在常驻面板上没有「收起」暗示，补一枚向下的 chevron。
+ * 让播放器卡片支持「按住顶部横条下拉收起」。
+ *
+ * 手势只挂在横条上，不与进度条、封面等控件抢事件。拖动时卡片跟随手指、
+ * 轻微缩小并变淡；松手超过阈值（或向下甩出）就滑出屏幕再收起，否则弹回。
  */
 @Composable
-private fun SheetHandle(onCollapse: () -> Unit) {
+private fun SwipeCollapsibleSheet(
+    onCollapse: () -> Unit,
+    modifier: Modifier = Modifier,
+    content: @Composable (handle: @Composable () -> Unit) -> Unit
+) {
+    val scope = rememberCoroutineScope()
+    val density = LocalDensity.current
+    var offset by remember { mutableFloatStateOf(0f) }
+    var heightPx by remember { mutableIntStateOf(0) }
+    var settleJob by remember { mutableStateOf<Job?>(null) }
+    val minThreshold = with(density) { DRAG_DISMISS_MIN.toPx() }
+    val flingThreshold = with(density) { DRAG_DISMISS_FLING.toPx() }
+
+    fun animateTo(target: Float, onEnd: (() -> Unit)? = null) {
+        settleJob?.cancel()
+        settleJob = scope.launch {
+            animate(
+                initialValue = offset,
+                targetValue = target,
+                animationSpec = if (target == 0f) {
+                    spring(dampingRatio = 0.82f, stiffness = 420f)
+                } else {
+                    tween(durationMillis = 220, easing = FastOutSlowInEasing)
+                }
+            ) { value, _ -> offset = value }
+            onEnd?.invoke()
+        }
+    }
+
+    val handle: @Composable () -> Unit = {
+        SheetHandle(
+            onCollapse = onCollapse,
+            onDragStart = { settleJob?.cancel() },
+            onDrag = { delta -> offset = (offset + delta).coerceAtLeast(0f) },
+            onDragEnd = { velocity ->
+                val threshold = maxOf(heightPx * DRAG_DISMISS_FRACTION, minThreshold)
+                if (offset > threshold || velocity > flingThreshold) {
+                    animateTo(heightPx.toFloat().coerceAtLeast(1f)) { onCollapse() }
+                } else {
+                    animateTo(0f)
+                }
+            },
+            onDragCancel = { animateTo(0f) }
+        )
+    }
+
+    Box(
+        Modifier
+            // graphicsLayer 必须在调用方 modifier 之前：背景/clip 在这些绘制修饰符后面，
+            // 放在图层外面的话只有内容会跟着手指走，背景会留在原地
+            .graphicsLayer {
+                translationY = offset
+                val progress = (offset / heightPx.coerceAtLeast(1)).coerceIn(0f, 1f)
+                val scale = 1f - DRAG_SCALE_DROP * progress
+                scaleX = scale
+                scaleY = scale
+                alpha = 1f - DRAG_ALPHA_DROP * progress
+                transformOrigin = TransformOrigin(0.5f, 0f)
+            }
+            .then(modifier)
+            .onSizeChanged { heightPx = it.height }
+    ) {
+        content(handle)
+    }
+}
+
+/**
+ * 顶部小横条：整条顶部区域（≥44dp 高）可点，点一下收起；
+ * 按住拖动的回调交给 [SwipeCollapsibleSheet]。
+ *
+ * 拖动回调用 rememberUpdatedState 读取：pointerInput 的 key 必须保持稳定，
+ * 否则拖动中的每一帧重组都会把在途手势重启。
+ */
+@Composable
+private fun SheetHandle(
+    onCollapse: () -> Unit,
+    onDragStart: (() -> Unit)? = null,
+    onDrag: ((Float) -> Unit)? = null,
+    onDragEnd: ((Float) -> Unit)? = null,
+    onDragCancel: (() -> Unit)? = null
+) {
+    val currentDragStart by rememberUpdatedState(onDragStart)
+    val currentDrag by rememberUpdatedState(onDrag)
+    val currentDragEnd by rememberUpdatedState(onDragEnd)
+    val currentDragCancel by rememberUpdatedState(onDragCancel)
+    val dragModifier = if (onDrag != null) {
+        Modifier.pointerInput(Unit) {
+            val tracker = VelocityTracker()
+            detectVerticalDragGestures(
+                onDragStart = {
+                    tracker.resetTracking()
+                    currentDragStart?.invoke()
+                },
+                onVerticalDrag = { change, dragAmount ->
+                    change.consume()
+                    tracker.addPosition(change.uptimeMillis, change.position)
+                    currentDrag?.invoke(dragAmount)
+                },
+                onDragEnd = { currentDragEnd?.invoke(tracker.calculateVelocity().y) },
+                onDragCancel = { currentDragCancel?.invoke() }
+            )
+        }
+    } else {
+        Modifier
+    }
     Box(
         Modifier
             .fillMaxWidth()
             .heightIn(min = 44.dp)
+            .then(dragModifier)
             .clickable(onClick = onCollapse),
         contentAlignment = Alignment.Center
     ) {

@@ -6,6 +6,8 @@
 package cn.loveq.podcast.ui
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.animateColorAsState
@@ -17,13 +19,14 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -89,6 +92,7 @@ import cn.loveq.podcast.data.Episode
 import cn.loveq.podcast.data.Progress
 import cn.loveq.podcast.data.canResume
 import cn.loveq.podcast.ui.theme.AppColors
+import java.util.Calendar
 import kotlin.math.abs
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
@@ -101,7 +105,7 @@ private const val SWIPE_FRACTION = 0.22f
 /** 甩动速度（dp/秒）达到这个值时，距离不到阈值也算切换 */
 private val SWIPE_FLING_VELOCITY_DP = 900.dp
 
-/** 双击标题回顶：超过这个条目数就不做逐格动画，直接瞬移 */
+/** 回到顶部：超过这个条目数就不做逐格动画，直接瞬移 */
 private const val SNAP_TO_TOP_AFTER = 30
 
 /** 拖动时列表跟随手指的位移比例：跟得太死会让人以为整页要翻走 */
@@ -183,6 +187,37 @@ fun EpisodeListPane(
     val listState = rememberLazyListState()
     val episodeCount = state.episodes.size
     val startPage = state.startPage
+    // 顶部标题：筛选态显示实际加载范围，未筛选时显示总期数
+    val headerLabel = buildString {
+        if (state.filtering) {
+            val monthOnly = state.filterMonth != 0
+            val anchorKey =
+                if (monthOnly) state.filterYear * 100 + state.filterMonth
+                else state.filterYear
+            fun keyOf(e: Episode) = if (monthOnly) e.yearMonth else e.year
+            // 这一行还要放分类名和「回到顶部」，手机上改用紧凑日期，避免折行
+            fun labelOf(e: Episode) =
+                if (monthOnly) "${e.year}.${e.month.toString().padStart(2, '0')}"
+                else "${e.year} 年"
+            val newest = state.episodes.firstOrNull()
+            val oldest = state.episodes.lastOrNull()
+            if (newest != null && oldest != null &&
+                (keyOf(newest) != anchorKey || keyOf(oldest) != anchorKey)
+            ) {
+                append(labelOf(oldest)).append(" – ").append(labelOf(newest))
+            } else {
+                append(
+                    if (monthOnly) "${state.filterYear}.${state.filterMonth.toString().padStart(2, '0')}"
+                    else "${state.filterYear} 年"
+                )
+            }
+            append(" · ${state.episodes.size} 期")
+        } else {
+            if (archiveCount > 0) append("$archiveCount 期")
+            else append("已加载 ${state.episodes.size} 期")
+            append(" · 新到旧")
+        }
+    }
     val shouldLoadNext by remember(episodeCount) {
         derivedStateOf {
             val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
@@ -196,6 +231,40 @@ fun EpisodeListPane(
             (state.filtering || startPage > 1) && first <= 1
         }
     }
+    // 年份药丸常驻：跟随视口最上面的一期更新，不再跟着节目一起滚走
+    val stickyEpisodes by rememberUpdatedState(state.episodes)
+    val stickyYear by remember {
+        derivedStateOf {
+            val first = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.key is Long }
+                ?: return@derivedStateOf 0
+            stickyEpisodes.getOrNull(first.index)?.year ?: 0
+        }
+    }
+    // 提示只在用户真的滑到最顶/最底后出现；刚进入筛选位置时不弹
+    val atTop by remember { derivedStateOf { !listState.canScrollBackward } }
+    val atBottom by remember { derivedStateOf { !listState.canScrollForward } }
+    var userScrolled by remember(state.filtering, state.scrollResetToken) {
+        mutableStateOf(false)
+    }
+    var isScrolling by remember(state.filtering, state.scrollResetToken) {
+        mutableStateOf(false)
+    }
+    // 筛选态的上下加载提示：spinner 被插在列表边缘之外，用户常常看不见，
+    // 用和左右切分类同款的浮层明确告诉用户「还能继续接、正在接」
+    val filterUnit = if (state.filterMonth == 0) "年份" else "月份"
+    val currentPeriodKey = remember(state.filterMonth) {
+        val cal = Calendar.getInstance()
+        val year = cal.get(Calendar.YEAR)
+        if (state.filterMonth == 0) year else year * 100 + cal.get(Calendar.MONTH) + 1
+    }
+    val newestLoadedKey = state.episodes.firstOrNull()?.let {
+        if (state.filterMonth == 0) it.year else it.yearMonth
+    } ?: 0
+    val hasNewerPeriod = state.filtering && newestLoadedKey in 1 until currentPeriodKey
+    val showNewerHint = state.filtering && !state.jumping && !selecting &&
+        (state.loadingUp || (userScrolled && !isScrolling && atTop && hasNewerPeriod))
+    val showOlderHint = state.filtering && !state.jumping && !selecting &&
+        (state.loadingDown || (userScrolled && !isScrolling && atBottom && !state.filterExhausted))
     // 刚跳到某个月时列表正停在顶部：这时不能立刻把相邻月份拼进来，
     // 否则看起来像筛选没生效。
     var canLoadNewer by remember(state.filtering, state.scrollResetToken) {
@@ -211,11 +280,14 @@ fun EpisodeListPane(
             // 跳转定位是程序化滚动，别把它当成用户手势；等两帧落定
             withFrameNanos { }
             withFrameNanos { }
-            snapshotFlow { listState.isScrollInProgress }.collect { scrolling ->
-                if (!scrolling) return@collect
+            snapshotFlow { listState.isScrollInProgress }.collect { inProgress ->
+                isScrolling = inProgress
+                if (!inProgress) return@collect
+                userScrolled = true
                 canLoadOlder = true
-                // 要先离开顶部，才允许回顶时接更新的月份
-                if (listState.firstVisibleItemIndex > 0) canLoadNewer = true
+                // 顶部下拉本身就是明确的手势：直接允许接更新的月份，
+                // 不再要求先滚离顶部再回来，否则提示让用户下拉却拉不动
+                canLoadNewer = true
             }
         }
         LaunchedEffect(shouldLoadNext, canLoadOlder) {
@@ -244,16 +316,31 @@ fun EpisodeListPane(
         val target = state.scrollToId
         val index = target?.let { id -> state.episodes.indexOfFirst { it.id == id } } ?: -1
         if (index >= 0) {
-            // 节目前面还有「继续收听」「向上加载」两个可选 item，滚动下标要加上它们
-            val leading = (if (lastProgress != null && lastProgress.canResume) 1 else 0) +
-                (if (state.loadingUp) 1 else 0)
-            listState.scrollToItem(index + leading)
+            // 列表第一项就是节目（继续收听卡片和加载占位都已移出 LazyColumn）
+            listState.scrollToItem(index)
         } else {
             listState.scrollToItem(0)
         }
     }
     val haptics = LocalHapticFeedback.current
     val scope = rememberCoroutineScope()
+    // 主列表滚过第一项后出现「回到顶部」；筛选态始终显示，用来退回完整列表
+    val showBackToTop by remember(state.filtering) {
+        derivedStateOf { state.filtering || listState.firstVisibleItemIndex > 0 }
+    }
+    val backToTop: () -> Unit = {
+        if (state.filtering) {
+            onClearDateFilter()
+        } else {
+            scope.launch {
+                if (listState.firstVisibleItemIndex > SNAP_TO_TOP_AFTER) {
+                    listState.scrollToItem(0)
+                } else {
+                    listState.animateScrollToItem(0)
+                }
+            }
+        }
+    }
     // 滑动切分类：位移驱动橡皮筋 + 相邻分类提示
     var dragPx by remember { mutableFloatStateOf(0f) }
     var thresholdPx by remember { mutableFloatStateOf(1f) }
@@ -375,77 +462,47 @@ fun EpisodeListPane(
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .padding(start = 26.dp, end = 26.dp, top = 20.dp, bottom = 10.dp),
-                verticalAlignment = Alignment.Bottom
+                    // 固定最小高度：回到顶部按钮出现/消失时不把下面的列表顶来顶去
+                    .heightIn(min = 40.dp)
+                    .padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                // 双击标题回到最顶部（最新一期）：翻了几百期之后单手划回去很费劲，
-                // 这里空出一块永远在原地的大热区。单击不做任何事，避免和双击抢判定
+                // 年份胶囊常驻在标题行里：只有下面的节目滚动，跨年时在这里淡入切换。
+                // 分类名上面的胶囊已经显示过了，这里不再重复一行大标题
+                if (stickyYear != 0) {
+                    Crossfade(
+                        targetState = stickyYear,
+                        animationSpec = tween(160),
+                        label = "stickyYear"
+                    ) { year ->
+                        YearPill(year, onPickDate)
+                    }
+                    Spacer(Modifier.width(10.dp))
+                }
+                // 内容变化时淡入一次，让「又接了一个月」看得出来
+                val headerAlpha = remember { Animatable(1f) }
+                LaunchedEffect(headerLabel) {
+                    headerAlpha.snapTo(0.35f)
+                    headerAlpha.animateTo(1f, tween(260))
+                }
                 Text(
-                    state.category.name,
-                    style = if (compact) MaterialTheme.typography.headlineSmall
-                    else MaterialTheme.typography.displaySmall,
-                    color = AppColors.Ink,
-                    modifier = Modifier
-                        .alignByBaseline()
-                        .combinedClickable(
-                            indication = null,
-                            interactionSource = remember { MutableInteractionSource() },
-                            onDoubleClick = {
-                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                                scope.launch {
-                                    // animateScrollToItem 会一格一格滚过去：
-                                    // 翻了几百期之后「回顶部」要磨蹭好几秒，超过阈值直接瞬移
-                                    if (listState.firstVisibleItemIndex > SNAP_TO_TOP_AFTER) {
-                                        listState.scrollToItem(0)
-                                    } else {
-                                        listState.animateScrollToItem(0)
-                                    }
-                                }
-                            },
-                            onClick = {}
-                        )
-                )
-                Spacer(Modifier.width(12.dp))
-                Text(
-                    buildString {
-                        // 筛选态下官网总期数已经没有意义，说清楚现在看的是哪一段。
-                        // 上下滑过相邻月份后，标题跟着显示实际加载到的范围
-                        if (state.filtering) {
-                            val monthOnly = state.filterMonth != 0
-                            val anchorKey =
-                                if (monthOnly) state.filterYear * 100 + state.filterMonth
-                                else state.filterYear
-                            fun keyOf(e: Episode) = if (monthOnly) e.yearMonth else e.year
-                            fun labelOf(e: Episode) =
-                                if (monthOnly) "${e.year} 年 ${e.month} 月" else "${e.year} 年"
-                            val newest = state.episodes.firstOrNull()
-                            val oldest = state.episodes.lastOrNull()
-                            if (newest != null && oldest != null &&
-                                (keyOf(newest) != anchorKey || keyOf(oldest) != anchorKey)
-                            ) {
-                                append(labelOf(oldest)).append(" – ").append(labelOf(newest))
-                            } else {
-                                append(
-                                    if (monthOnly) "${state.filterYear} 年 ${state.filterMonth} 月"
-                                    else "${state.filterYear} 年"
-                                )
-                            }
-                            append(" · ${state.episodes.size} 期")
-                        } else {
-                            if (archiveCount > 0) append("$archiveCount 期")
-                            else append("已加载 ${state.episodes.size} 期")
-                            append(" · 新到旧")
-                        }
-                    },
+                    headerLabel,
                     style = MaterialTheme.typography.labelMedium,
                     color = AppColors.Muted,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis,
                     modifier = Modifier
                         .weight(1f)
-                        .alignByBaseline()
+                        .alpha(headerAlpha.value)
                 )
-                if (state.filtering) {
-                    TextButton(onClick = onClearDateFilter) {
-                        Text("看全部", color = AppColors.Red, fontWeight = FontWeight.Bold)
+                AnimatedVisibility(
+                    visible = showBackToTop,
+                    enter = fadeIn(tween(140)) + scaleIn(tween(160), initialScale = 0.9f),
+                    exit = fadeOut(tween(120)) + scaleOut(tween(120), targetScale = 0.96f)
+                ) {
+                    TextButton(onClick = backToTop) {
+                        Text("回到顶部", color = AppColors.Red, fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -471,6 +528,23 @@ fun EpisodeListPane(
                 color = AppColors.RedDeep,
                 modifier = Modifier.padding(start = 26.dp, bottom = 6.dp)
             )
+        }
+
+        // 继续收听固定在列表上方：从任何滚动位置进入页面都能直接看到
+        if (!selecting && lastProgress != null && lastProgress.canResume) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(start = 16.dp, end = 16.dp, top = 4.dp)
+            ) {
+                ContinueCardSlot(
+                    visible = showContinue,
+                    progress = lastProgress,
+                    isPlaying = isPlaying,
+                    compact = compact,
+                    onResume = onResumeLast
+                )
+            }
         }
 
         RefreshableBox(
@@ -513,33 +587,7 @@ fun EpisodeListPane(
                             bottom = 14.dp + bottomInset
                         )
                     ) {
-                        if (lastProgress != null && lastProgress.canResume) {
-                            item(key = "continue") {
-                                ContinueCardSlot(
-                                    visible = showContinue,
-                                    progress = lastProgress,
-                                    isPlaying = isPlaying,
-                                    compact = compact,
-                                    onResume = onResumeLast
-                                )
-                            }
-                        }
-                        if (state.loadingUp) {
-                            item(key = "loading_up") {
-                                Box(Modifier.fillMaxWidth().padding(12.dp)) {
-                                    CircularProgressIndicator(
-                                        Modifier.align(Alignment.Center).size(22.dp),
-                                        strokeWidth = 2.dp,
-                                        color = AppColors.Red
-                                    )
-                                }
-                            }
-                        }
                         itemsIndexed(state.episodes, key = { _, episode -> episode.id }) { index, episode ->
-                            val prevYear = state.episodes.getOrNull(index - 1)?.year
-                            if (episode.year != 0 && episode.year != prevYear) {
-                                YearPill(episode.year, onPickDate)
-                            }
                             val current = playingMediaId == episode.id.toString()
                             EpisodeRow(
                                 episode = episode,
@@ -559,7 +607,8 @@ fun EpisodeListPane(
                         }
                         item(key = "footer") {
                             ListFooter(
-                                loading = state.loadingDown || state.jumping,
+                                // 筛选态的加载反馈由上面的浮层负责，footer 不再重复转圈
+                                loading = !state.filtering && (state.loadingDown || state.jumping),
                                 endReached = state.endReached,
                                 error = state.loadMoreError,
                                 endText = "已经到底啦 · 2003.06.15",
@@ -588,6 +637,32 @@ fun EpisodeListPane(
                         .background(AppColors.RedMist.copy(alpha = 0.92f))
                         .padding(horizontal = 12.dp, vertical = 8.dp)
                         .alpha(0.35f + 0.65f * swipeProgress)
+                )
+            }
+
+            // 筛选态：上滑接更早、下拉接更新，加载中也在这里给反馈
+            AnimatedHint(
+                visible = showNewerHint,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 8.dp)
+            ) {
+                LoadHint(
+                    text = if (state.loadingUp) "正在加载更新的$filterUnit…"
+                    else "下拉加载更新的$filterUnit",
+                    loading = state.loadingUp
+                )
+            }
+            AnimatedHint(
+                visible = showOlderHint,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 18.dp + bottomInset)
+            ) {
+                LoadHint(
+                    text = if (state.loadingDown) "正在加载更早的$filterUnit…"
+                    else "上滑加载更早的$filterUnit",
+                    loading = state.loadingDown
                 )
             }
         }
@@ -932,6 +1007,59 @@ private fun EpisodeRow(
                     )
                 }
             }
+        }
+    }
+}
+
+/** 浮层提示的淡入淡出：单独拆出来，避免在 BoxScope 里误选到 ColumnScope 的 AnimatedVisibility 重载 */
+@Composable
+private fun AnimatedHint(
+    visible: Boolean,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit
+) {
+    AnimatedVisibility(
+        visible = visible,
+        modifier = modifier,
+        enter = fadeIn(tween(140)) + scaleIn(tween(160), initialScale = 0.9f),
+        exit = fadeOut(tween(120)) + scaleOut(tween(120), targetScale = 0.96f)
+    ) {
+        content()
+    }
+}
+
+/** 筛选态上下加载的浮层提示：和左右切分类的提示同一套观感 */
+@Composable
+private fun LoadHint(
+    text: String,
+    loading: Boolean,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier
+            .clip(RoundedCornerShape(14.dp))
+            .background(AppColors.RedMist.copy(alpha = 0.95f))
+            .padding(horizontal = 14.dp, vertical = 9.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        if (loading) {
+            CircularProgressIndicator(
+                Modifier.size(14.dp),
+                strokeWidth = 2.dp,
+                color = AppColors.Red
+            )
+            Spacer(Modifier.width(8.dp))
+        }
+        Crossfade(
+            targetState = text,
+            animationSpec = tween(160),
+            label = "loadHintText"
+        ) { label ->
+            Text(
+                label,
+                style = MaterialTheme.typography.labelMedium,
+                color = AppColors.RedDeep
+            )
         }
     }
 }

@@ -167,7 +167,7 @@ internal fun DateFilterDialog(
                 }
                 Spacer(Modifier.height(16.dp))
                 Text(
-                    "选好后列表只保留那一段时间，标题右边的「看全部」随时退回完整列表。",
+                    "选好后列表只保留那一段时间，标题右边的「回到顶部」随时退回完整列表。",
                     style = MaterialTheme.typography.bodySmall,
                     color = AppColors.Muted
                 )
