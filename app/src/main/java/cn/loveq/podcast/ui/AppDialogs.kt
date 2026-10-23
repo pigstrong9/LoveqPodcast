@@ -252,7 +252,8 @@ internal fun SettingsDialog(
                 Text("外观", style = MaterialTheme.typography.titleMedium, color = AppColors.Ink)
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "跟随系统会随手机的深色模式自动切换；车机常年深色也可以固定为深色。",
+                    "「跟随系统」会跟随手机/车机的日夜模式（比亚迪 DiLink 的夜间模式也会识别）；" +
+                        "车机常年深色也可以固定为深色。",
                     style = MaterialTheme.typography.bodySmall,
                     color = AppColors.Muted
                 )

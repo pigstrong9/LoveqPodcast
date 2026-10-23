@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.navigationBars
@@ -37,6 +38,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -48,6 +52,7 @@ import cn.loveq.podcast.data.Progress
 import cn.loveq.podcast.data.UpdateStatus
 import cn.loveq.podcast.playback.MediaCache
 import cn.loveq.podcast.playback.PlaybackEvents
+import cn.loveq.podcast.ui.theme.AppColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -206,11 +211,29 @@ fun AppScreen(
         val landscape = maxWidth > maxHeight
         val sidebarWidth = (maxWidth * 0.17f).coerceIn(196.dp, 252.dp)
         val playerWidth = (maxWidth * 0.30f).coerceIn(320.dp, 424.dp)
+        // 根布局避让了导航栏，播放面板的背景会停在导航栏上方。这里在导航栏区域
+        // 补一块与播放面板同色的底，让深色面板看起来一直铺到屏幕底部；
+        // 内容仍然避让导航栏，不会和手势条/车机底栏打架。
+        val navBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+        val playerColor = AppColors.Player
 
         Box(
             Modifier
                 .fillMaxSize()
                 .background(MaterialTheme.colorScheme.background)
+                .drawBehind {
+                    if (wide && playingMediaId != null && !playerCollapsed) {
+                        val navPx = navBottom.toPx()
+                        if (navPx > 0f) {
+                            val playerPx = playerWidth.toPx()
+                            drawRect(
+                                color = playerColor,
+                                topLeft = Offset(size.width - playerPx, size.height - navPx),
+                                size = Size(playerPx, navPx)
+                            )
+                        }
+                    }
+                }
                 // 这里只避让导航栏/手势条。状态栏由各色块自己避让（见 topInset）：
                 // 在根上 pad 会让侧栏和播放面板从状态栏底下断开，看着像贴了条白条。
                 // 另外 DiLink 明明把状态栏藏了却仍上报非零 statusBars inset，

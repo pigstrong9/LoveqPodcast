@@ -35,6 +35,8 @@ class MainActivity : ComponentActivity() {
 
     private val store by lazy { (application as LoveqApp).progressStore }
 
+    private val carNightMode by lazy { (application as LoveqApp).carNightMode }
+
     private val updates by lazy { (application as LoveqApp).updates }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -54,10 +56,12 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch { updates.check(manual = false) }
         setContent {
             val themeMode by store.themeMode.collectAsStateWithLifecycle()
-            // 系统深浅色照常订阅：跟随系统档要实时响应，固定档则忽略
+            // 比亚迪 DiLink 的日夜切换不一定反映到 uiMode，优先读车机设置
+            val carDark by carNightMode.dark.collectAsStateWithLifecycle()
+            // 系统深浅色照常订阅：车机没有专用键时用它兜底
             val systemDark = isSystemInDarkTheme()
             val dark = when (themeMode) {
-                ThemeMode.SYSTEM -> systemDark
+                ThemeMode.SYSTEM -> carDark ?: systemDark
                 ThemeMode.LIGHT -> false
                 ThemeMode.DARK -> true
             }

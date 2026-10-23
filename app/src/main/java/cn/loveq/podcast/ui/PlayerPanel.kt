@@ -368,7 +368,12 @@ private fun FullScreenPlayerDialog(
 ) {
     Dialog(
         onDismissRequest = onClose,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            // 5:5 分屏时默认会把导航栏算进 fitSystemWindows，深色卡片停在导航栏上方，
+            // 底下露出一条浅色应用背景。关掉它，让 Dialog 自己铺到屏幕底。
+            decorFitsSystemWindows = false
+        )
     ) {
         SwipeCollapsibleSheet(
             onCollapse = onClose,

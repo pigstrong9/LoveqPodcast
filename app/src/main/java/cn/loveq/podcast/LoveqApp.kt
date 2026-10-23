@@ -2,6 +2,7 @@ package cn.loveq.podcast
 
 import android.app.Application
 import cn.loveq.podcast.data.ApkInstaller
+import cn.loveq.podcast.data.CarNightMode
 import cn.loveq.podcast.data.DownloadManager
 import cn.loveq.podcast.data.EpisodeCacheStore
 import cn.loveq.podcast.data.EpisodeIndexStore
@@ -24,6 +25,8 @@ class LoveqApp : Application() {
         private set
     lateinit var progressStore: ProgressStore
         private set
+    lateinit var carNightMode: CarNightMode
+        private set
     lateinit var indexStore: EpisodeIndexStore
         private set
     lateinit var episodeCache: EpisodeCacheStore
@@ -43,6 +46,7 @@ class LoveqApp : Application() {
         rateLimitGuard = RateLimitGuard(this)
         repository = LoveqRepository(rateLimitGuard)
         progressStore = ProgressStore(this)
+        carNightMode = CarNightMode(this)
         indexStore = EpisodeIndexStore(this, rateLimitGuard)
         episodeCache = EpisodeCacheStore(this)
         queueStore = QueueStore(this)
