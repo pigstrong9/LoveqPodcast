@@ -2,6 +2,7 @@
 
 package cn.loveq.podcast.ui
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -10,9 +11,15 @@ import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
@@ -50,6 +57,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -61,7 +69,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
@@ -82,25 +92,24 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
+import androidx.activity.compose.BackHandler
 import cn.loveq.podcast.R
 import cn.loveq.podcast.playback.VolumeBoost
 import cn.loveq.podcast.ui.theme.AppColors
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-
-internal val SPEED_OPTIONS = listOf(0.75f, 1.0f, 1.25f, 1.5f, 1.75f, 2.0f, 2.5f, 3.0f)
 
 private val PanelShape = RoundedCornerShape(24.dp)
 
 /**
  * 封面边长占面板宽度的比例。
  * 高度不够时 [COVER_MIN] / 剩余高度会自动把它压下来，所以这里可以放得比较宽：
- * 车机 1280×720dp 的右侧栏有 660dp 高，比例太小会让封面缩在中间、上下大片空白。
+ * 竖屏 tall 屏上封面多吃一点宽度，整组内容才填得满面板，
+ * 不然上下各留一大条空白（实测 60dp+）。
  */
-private const val COVER_WIDTH_FRACTION = 0.85f
+private const val COVER_WIDTH_FRACTION = 0.92f
 
 /** 封面边长下限：再挤也不能缩成邮票 */
 private val COVER_MIN = 150.dp
@@ -111,8 +120,8 @@ private val COVER_MIN_SHORT = 96.dp
 /** 封面与底部内容之间的最小间距 */
 private val BOTTOM_GAP = 12.dp
 
-/** 间距上限：富余高度优先给封面，剩下的才摊到间距上，避免封面和内容脱节 */
-private val GAP_MAX = 36.dp
+/** 间距上限：富余高度优先摊到封面与内容的间距上（上限放宽，吸收 tall 屏的富余），剩下的才摊到上下边距 */
+private val GAP_MAX = 72.dp
 
 /** 底部内容与容器下沿之间的额外余量（系统手势条由外层 insets 处理，这里只留呼吸空间） */
 private val BOTTOM_CLEARANCE = 12.dp
@@ -219,62 +228,122 @@ fun PlayerSheet(
     tuningVisible: Boolean,
     onRequestTuning: () -> Unit,
     onClose: () -> Unit,
-    /** 状态栏避让量：见 FullScreenPlayerDialog。隐藏状态栏时为 0，车机行为不变 */
+    /** 状态栏避让量：隐藏状态栏时为 0，车机行为不变 */
     topInset: WindowInsets = WindowInsets(0.dp, 0.dp, 0.dp, 0.dp)
 ) {
-    FullScreenPlayerDialog(onClose = onClose, topInset = topInset) {
-        BoxWithConstraints {
-            // 只有真正「宽扁」的窗口才值得左右分栏；车机分屏拿到的窗口接近方形，
-            // 分栏会让封面按高度撑大、把控件挤到边上，不如回到上下堆叠并水平居中。
-            val horizontal = maxWidth > maxHeight * LANDSCAPE_SPLIT_RATIO
-            if (horizontal) {
-                LandscapePlayerContent(
-                    title = title,
-                    date = date,
-                    isPlaying = isPlaying,
-                    positionMs = positionMs,
-                    durationMs = durationMs,
-                    speed = speed,
-                    boost = boost,
-                    onToggle = onToggle,
-                    onSeekTo = onSeekTo,
-                    onSeekBack = onSeekBack,
-                    onSeekForward = onSeekForward,
-                    onSpeed = onSpeed,
-                    onBoost = onBoost,
-                    onRequestTuning = onRequestTuning,
-                    tuningVisible = tuningVisible,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .windowInsetsPadding(WindowInsets.navigationBars)
-                )
-            } else {
-                PlayerPanel(
-                    title = title,
-                    date = date,
-                    isPlaying = isPlaying,
-                    positionMs = positionMs,
-                    durationMs = durationMs,
-                    speed = speed,
-                    boost = boost,
-                    onToggle = onToggle,
-                    onSeekTo = onSeekTo,
-                    onSeekBack = onSeekBack,
-                    onSeekForward = onSeekForward,
-                    onSpeed = onSpeed,
-                    onBoost = onBoost,
-                    onRequestTuning = onRequestTuning,
-                    tuningVisible = tuningVisible,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(horizontal = 26.dp)
-                        // 底部额外留出系统手势条/导航栏的高度，否则底部设置栏会被它压住
-                        .windowInsetsPadding(WindowInsets.navigationBars)
-                        .padding(bottom = 12.dp)
-                )
+    // 卡片式全屏播放层（渲染在应用自己的窗口里，不走 Dialog——MIUI 会把弹窗
+    // 窗口按内容尺寸居中、够不到屏幕四边）。首页点迷你条：卡片从底部滑入、
+    // 遮罩淡入；关闭（横条/下拉/遮罩/返回键）滑出后再真正退出。
+    var visible by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val close = {
+        if (visible) {
+            visible = false
+            scope.launch {
+                delay(260)
+                onClose()
             }
         }
     }
+    LaunchedEffect(Unit) { visible = true }
+    BackHandler(onBack = close)
+
+    Box(Modifier.fillMaxSize()) {
+        AnimatedVisibility(
+            visible = visible,
+            enter = fadeIn(tween(220)),
+            exit = fadeOut(tween(220))
+        ) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.32f))
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = close
+                    )
+            )
+        }
+        AnimatedVisibility(
+            visible = visible,
+            enter = slideInVertically(tween(320, easing = FastOutSlowInEasing)) { it },
+            exit = slideOutVertically(tween(240)) { it },
+            modifier = Modifier.fillMaxSize()
+        ) {
+            SwipeCollapsibleSheet(
+                onCollapse = close,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .windowInsetsPadding(topInset)
+                    .padding(top = CARD_TOP_MARGIN)
+                    .clip(
+                        RoundedCornerShape(
+                            topStart = CARD_CORNER,
+                            topEnd = CARD_CORNER
+                        )
+                    )
+                    .background(AppColors.Player)
+            ) { handle ->
+                Column(Modifier.fillMaxSize()) {
+                    handle()
+                    Box(Modifier.weight(1f).fillMaxWidth()) {
+                BoxWithConstraints {
+                    // 只有真正「宽扁」的窗口才值得左右分栏；车机分屏拿到的窗口接近方形，
+                    // 分栏会让封面按高度撑大、把控件挤到边上，不如回到上下堆叠并水平居中。
+                    val horizontal = maxWidth > maxHeight * LANDSCAPE_SPLIT_RATIO
+                    if (horizontal) {
+                        LandscapePlayerContent(
+                            title = title,
+                            date = date,
+                            isPlaying = isPlaying,
+                            positionMs = positionMs,
+                            durationMs = durationMs,
+                            speed = speed,
+                            boost = boost,
+                            onToggle = onToggle,
+                            onSeekTo = onSeekTo,
+                            onSeekBack = onSeekBack,
+                            onSeekForward = onSeekForward,
+                            onSpeed = onSpeed,
+                            onBoost = onBoost,
+                            onRequestTuning = onRequestTuning,
+                            tuningVisible = tuningVisible,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .windowInsetsPadding(WindowInsets.navigationBars)
+                        )
+                    } else {
+                        PlayerPanel(
+                            title = title,
+                            date = date,
+                            isPlaying = isPlaying,
+                            positionMs = positionMs,
+                            durationMs = durationMs,
+                            speed = speed,
+                            boost = boost,
+                            onToggle = onToggle,
+                            onSeekTo = onSeekTo,
+                            onSeekBack = onSeekBack,
+                            onSeekForward = onSeekForward,
+                            onSpeed = onSpeed,
+                            onBoost = onBoost,
+                            onRequestTuning = onRequestTuning,
+                            tuningVisible = tuningVisible,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(horizontal = 26.dp)
+                                // 底部额外留出系统手势条/导航栏的高度，否则底部设置栏会被它压住
+                                .windowInsetsPadding(WindowInsets.navigationBars)
+                                .padding(bottom = 12.dp)
+                        )
+                    }
+                }
+            }
+        }
+    }
+    }
+}
 }
 
 /** 横屏全屏播放器：左封面右控件的分栏布局，车机矮屏专用 */
@@ -341,74 +410,21 @@ private fun LandscapePlayerContent(
             }
         }
     }
-    if (tuningVisible) {
-        PlaybackSettingsDialog(
-            speed = speed,
-            boost = boost,
-            onSpeed = onSpeed,
-            onBoost = onBoost,
-            onClose = onRequestTuning
-        )
-    }
 }
-
-/**
- * 全屏播放面板的宿主：全屏 Dialog + 顶部小横条。
- * 拖拽收起只挂在横条上，面板本体不参与手势，所以拖进度条、拖任何控件都不会误触收起。
- *
- * topInset 排在 clip/background 之前：状态栏图标是全窗口共用的深色，深色卡片要是
- * 画到状态栏底下，那半截图标就看不见。让卡片整体从状态栏下方起画，底下露出的还是
- * 浅色列表背景，图标才有对比度。隐藏状态栏时 topInset 为 0，车机行为不变。
- */
-@Composable
-private fun FullScreenPlayerDialog(
-    onClose: () -> Unit,
-    topInset: WindowInsets,
-    panel: @Composable () -> Unit
-) {
-    Dialog(
-        onDismissRequest = onClose,
-        properties = DialogProperties(
-            usePlatformDefaultWidth = false,
-            // 5:5 分屏时默认会把导航栏算进 fitSystemWindows，深色卡片停在导航栏上方，
-            // 底下露出一条浅色应用背景。关掉它，让 Dialog 自己铺到屏幕底。
-            decorFitsSystemWindows = false
-        )
-    ) {
-        SwipeCollapsibleSheet(
-            onCollapse = onClose,
-            modifier = Modifier
-                .fillMaxSize()
-                .windowInsetsPadding(topInset)
-                .padding(top = CARD_TOP_MARGIN)
-                .clip(
-                    RoundedCornerShape(
-                        topStart = CARD_CORNER,
-                        topEnd = CARD_CORNER,
-                        bottomStart = 0.dp,
-                        bottomEnd = 0.dp
-                    )
-                )
-                .background(AppColors.Player)
-        ) { handle ->
-            Column(Modifier.fillMaxSize()) {
-                handle()
-                Box(Modifier.weight(1f).fillMaxWidth()) { panel() }
-            }
-        }
-    }
-}
-
-/** 全屏播放卡片顶部留出的缝隙，露出后面的内容，配合圆角更像 iOS 的全屏播放器 */
-private val CARD_TOP_MARGIN = 10.dp
-
-/** 卡片顶部圆角（iOS 风格的大圆角） */
-private val CARD_CORNER = 28.dp
 
 /** 下拉收起的判定：拖过高度的 18%（不少于 72dp）或向下甩得够快 */
 private const val DRAG_DISMISS_FRACTION = 0.18f
 private val DRAG_DISMISS_MIN = 72.dp
 private val DRAG_DISMISS_FLING = 900.dp
+
+/** 卡片式播放层顶部留出的缝隙，露出后面的列表，配合圆角更像系统播放器 */
+private val CARD_TOP_MARGIN = 10.dp
+
+/** 卡片顶部圆角 */
+private val CARD_CORNER = 28.dp
+
+/** 进度条刻度点数量：拖动时每跨过一颗给一次齿轮震动 */
+private const val SCRUBBER_TICKS = 42
 
 /** 拖动全程的缩小/变淡幅度 */
 private const val DRAG_SCALE_DROP = 0.08f
@@ -452,7 +468,10 @@ private fun SwipeCollapsibleSheet(
 
     val handle: @Composable () -> Unit = {
         SheetHandle(
-            onCollapse = onCollapse,
+            // 点横条不是瞬关：先播放卡片滑下+缩小的动画，动画结束再真正收起
+            onCollapse = {
+                animateTo(heightPx.toFloat().coerceAtLeast(1f)) { onCollapse() }
+            },
             onDragStart = { settleJob?.cancel() },
             onDrag = { delta -> offset = (offset + delta).coerceAtLeast(0f) },
             onDragEnd = { velocity ->
@@ -540,157 +559,6 @@ private fun SheetHandle(
                 .clip(CircleShape)
                 .background(Color.White.copy(alpha = 0.38f))
         )
-    }
-}
-
-/**
- * 拆出来的倍速 + 音量增强设置层：默认不占播放面板位置，
- * 由面板底部的小按钮弹出，选完点一下外面（或「完成」）即缩回。
- */
-@Composable
-private fun PlaybackSettingsDialog(
-    speed: Float,
-    boost: Int,
-    onSpeed: (Float) -> Unit,
-    onBoost: (Int) -> Unit,
-    onClose: () -> Unit
-) {
-    Dialog(
-        onDismissRequest = onClose,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
-    ) {
-        TuningContent(
-            modifier = Modifier
-                .padding(horizontal = 22.dp)
-                .widthIn(max = 460.dp)
-                .fillMaxWidth(),
-            speed = speed,
-            boost = boost,
-            onSpeed = onSpeed,
-            onBoost = onBoost,
-            onDone = onClose
-        )
-    }
-}
-
-/** 深色圆角设置面板：音量增强滑杆 + 倍速分段 */
-@Composable
-private fun TuningContent(
-    speed: Float,
-    boost: Int,
-    onSpeed: (Float) -> Unit,
-    onBoost: (Int) -> Unit,
-    onDone: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Column(
-        modifier
-            .clip(RoundedCornerShape(20.dp))
-            .background(AppColors.PlayerRaised)
-            .padding(horizontal = 16.dp, vertical = 14.dp)
-    ) {
-        Text(
-            "播放设置",
-            style = MaterialTheme.typography.titleSmall,
-            color = AppColors.PlayerTitle
-        )
-        Spacer(Modifier.height(12.dp))
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                "音量增强",
-                style = MaterialTheme.typography.labelSmall,
-                color = AppColors.PlayerMeta,
-                letterSpacing = 1.sp
-            )
-            Spacer(Modifier.weight(1f))
-            Text(
-                "$boost%",
-                style = MaterialTheme.typography.labelSmall,
-                color = if (boost > VolumeBoost.MIN_PERCENT) Color.White else AppColors.PlayerSub,
-                fontWeight = FontWeight.Bold
-            )
-        }
-        FlatSlider(
-            value = (boost - VolumeBoost.MIN_PERCENT).toFloat() /
-                (VolumeBoost.MAX_PERCENT - VolumeBoost.MIN_PERCENT),
-            onValueChange = { fraction ->
-                onBoost(
-                    (VolumeBoost.MIN_PERCENT + fraction *
-                        (VolumeBoost.MAX_PERCENT - VolumeBoost.MIN_PERCENT))
-                        .roundToInt()
-                        .coerceIn(VolumeBoost.MIN_PERCENT, VolumeBoost.MAX_PERCENT)
-                )
-            },
-            modifier = Modifier.padding(top = 2.dp)
-        )
-        Spacer(Modifier.height(12.dp))
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                "倍速",
-                style = MaterialTheme.typography.labelSmall,
-                color = AppColors.PlayerMeta,
-                letterSpacing = 1.5.sp
-            )
-            Spacer(Modifier.weight(1f))
-            Text(
-                "全局记忆",
-                style = MaterialTheme.typography.labelSmall,
-                color = AppColors.PlayerSub
-            )
-        }
-        Spacer(Modifier.height(9.dp))
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            SPEED_OPTIONS.forEach { option ->
-                val selected = option == speed
-                val cellBackground by animateColorAsState(
-                    targetValue = if (selected) AppColors.Red else AppColors.PlayerControl,
-                    animationSpec = tween(200),
-                    label = "speedCell"
-                )
-                val textColour by animateColorAsState(
-                    targetValue = if (selected) Color.White else AppColors.PlayerOption,
-                    animationSpec = tween(200),
-                    label = "speedText"
-                )
-                Box(
-                    Modifier
-                        .weight(1f)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(cellBackground)
-                        .clickable { onSpeed(option) }
-                        .padding(vertical = 9.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        formatSpeed(option),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = textColour,
-                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                        maxLines = 1
-                    )
-                }
-            }
-        }
-        Spacer(Modifier.height(12.dp))
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(12.dp))
-                .background(AppColors.PlayerControl)
-                .clickable(onClick = onDone)
-                .padding(vertical = 11.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                "完成",
-                style = MaterialTheme.typography.labelLarge,
-                color = Color.White,
-                fontWeight = FontWeight.Bold
-            )
-        }
     }
 }
 
@@ -807,15 +675,6 @@ private fun PlayerPanel(
         }
     }
 
-    if (tuningVisible) {
-        PlaybackSettingsDialog(
-            speed = speed,
-            boost = boost,
-            onSpeed = onSpeed,
-            onBoost = onBoost,
-            onClose = onRequestTuning
-        )
-    }
 }
 
 /** 标题 / 日期 / 进度 / 控制 / 底部设置栏，常驻面板与滑层共用同一份实现 */
@@ -987,7 +846,10 @@ private fun SkipButton(icon: ImageVector, contentDescription: String, onClick: (
     }
 }
 
-/** 白色细轨道 + 圆点，视觉 6dp、触控热区 44dp */
+/**
+ * 小宇宙式进度条：灰色胶囊底板 + 刻度点阵 + 白色播放头竖线，时间标签在底板上方。
+ * 已播刻度为主题色粗点、未播为灰色小点；触控热区 44dp。
+ */
 @Composable
 private fun Scrubber(
     positionMs: Long,
@@ -1011,13 +873,33 @@ private fun Scrubber(
         label = "scrub"
     )
     val enabled = durationMs > 0
+    // 剩余时间跟着指针走（拖动时按拖动位置算），而不是只跟着已落盘的 positionMs
+    val shownPositionMs = (indicator * durationMs).toLong()
+    // 齿轮感：手指每扫过一颗刻度点哒一下
+    val clockTick = rememberClockTick()
 
     Column(modifier.fillMaxWidth()) {
+        // 时间标签在底板上方（小宇宙式）：左已播 / 右剩余
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(
+                formatMillis(positionMs),
+                style = MaterialTheme.typography.labelMedium,
+                color = AppColors.PlayerTitle,
+                fontWeight = FontWeight.SemiBold
+            )
+            Text(
+                if (durationMs > 0) "-" + formatMillis((durationMs - shownPositionMs).coerceAtLeast(0))
+                else "--:--",
+                style = MaterialTheme.typography.labelMedium,
+                color = AppColors.PlayerTitle,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
+        Spacer(Modifier.height(4.dp))
         BoxWithConstraints(
             Modifier
                 .fillMaxWidth()
-                // 视觉仍是 6dp 细轨，热区扩到 44dp 触控下限（车机/颠簸环境好按）
-                .heightIn(min = 44.dp)
+                .height(48.dp)
                 .then(
                     if (enabled) {
                         Modifier.pointerInput(durationMs) {
@@ -1025,6 +907,7 @@ private fun Scrubber(
                                 val down = awaitFirstDown(requireUnconsumed = false)
                                 var change = down
                                 val width = size.width.toFloat()
+                                var lastTick = Int.MIN_VALUE
                                 while (change.pressed) {
                                     change = awaitPointerEvent()
                                         .changes
@@ -1032,7 +915,13 @@ private fun Scrubber(
                                         ?: break
                                     if (change.pressed) {
                                         change.consume()
-                                        dragFraction = (change.position.x / width).coerceIn(0f, 1f)
+                                        val fraction = (change.position.x / width).coerceIn(0f, 1f)
+                                        dragFraction = fraction
+                                        val step = (fraction * SCRUBBER_TICKS).toInt()
+                                        if (step != lastTick) {
+                                            lastTick = step
+                                            clockTick()
+                                        }
                                     }
                                 }
                                 val target = dragFraction
@@ -1045,45 +934,62 @@ private fun Scrubber(
                     } else {
                         Modifier
                     }
-                ),
-            contentAlignment = Alignment.CenterStart
+                )
         ) {
-            val trackWidth = maxWidth
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .height(6.dp)
-                    .clip(RoundedCornerShape(3.dp))
-                    .background(AppColors.PlayerTrack)
-            ) {
-                Box(
-                    Modifier
-                        .fillMaxWidth(indicator)
-                        .fillMaxHeight()
-                        .background(Color.White)
+            val panelColor = AppColors.PlayerControl
+            val elapsedTick = AppColors.Red
+            val remainTick = AppColors.PlayerTrack
+            val tickCount = SCRUBBER_TICKS
+            Canvas(Modifier.fillMaxSize()) {
+                val panelHeight = 40.dp.toPx()
+                val panelTop = (size.height - panelHeight) / 2
+                // 胶囊底板
+                drawRoundRect(
+                    color = panelColor,
+                    topLeft = Offset(0f, panelTop),
+                    size = Size(size.width, panelHeight),
+                    cornerRadius = CornerRadius(panelHeight / 2, panelHeight / 2)
                 )
+                // 刻度点阵：已播粗点（主题色）、未播小点（灰）
+                val inset = 18.dp.toPx()
+                val usable = (size.width - inset * 2).coerceAtLeast(1f)
+                val tickW = 4.dp.toPx()
+                val tickH = 7.dp.toPx()
+                val dotW = 3.dp.toPx()
+                val dotH = 3.5.dp.toPx()
+                val centerY = panelTop + panelHeight / 2
+                for (i in 0 until tickCount) {
+                    val f = i / (tickCount - 1f)
+                    val cx = inset + usable * f
+                    if (f < indicator) {
+                        drawRoundRect(
+                            color = elapsedTick,
+                            topLeft = Offset(cx - tickW / 2, centerY - tickH / 2),
+                            size = Size(tickW, tickH),
+                            cornerRadius = CornerRadius(tickW / 2, tickW / 2)
+                        )
+                    } else {
+                        drawRoundRect(
+                            color = remainTick,
+                            topLeft = Offset(cx - dotW / 2, centerY - dotH / 2),
+                            size = Size(dotW, dotH),
+                            cornerRadius = CornerRadius(dotW / 2, dotW / 2)
+                        )
+                    }
+                }
+                // 白色播放头竖线：比刻度高出一截，扫过整块底板
+                if (enabled) {
+                    val headW = 2.5.dp.toPx()
+                    val headH = panelHeight - 10.dp.toPx()
+                    val hx = inset + usable * indicator
+                    drawRoundRect(
+                        color = Color.White,
+                        topLeft = Offset(hx - headW / 2, panelTop + (panelHeight - headH) / 2),
+                        size = Size(headW, headH),
+                        cornerRadius = CornerRadius(headW / 2, headW / 2)
+                    )
+                }
             }
-            if (enabled) {
-                Box(
-                    Modifier
-                        .size(16.dp)
-                        .offset(x = (trackWidth * indicator).coerceIn(0.dp, trackWidth - 16.dp), y = 0.dp)
-                        .clip(CircleShape)
-                        .background(Color.White)
-                )
-            }
-        }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(
-                formatMillis(positionMs),
-                style = MaterialTheme.typography.labelSmall,
-                color = AppColors.PlayerMeta
-            )
-            Text(
-                if (durationMs > 0) formatMillis(durationMs) else "--:--",
-                style = MaterialTheme.typography.labelSmall,
-                color = AppColors.PlayerMeta
-            )
         }
     }
 }
@@ -1135,69 +1041,10 @@ private fun TuningFooter(
                 if (speedChanged) add(formatSpeed(speed))
             }.joinToString(" · ").ifEmpty { "默认" },
             style = MaterialTheme.typography.labelMedium,
-            color = if (highlighted) Color.White else AppColors.PlayerMeta,
+            // 小宇宙式红色点缀：非默认档位一眼可辨
+            color = if (highlighted) AppColors.Red else AppColors.PlayerMeta,
             fontWeight = if (highlighted) FontWeight.Bold else FontWeight.Normal,
             maxLines = 1
-        )
-    }
-}
-
-/** 与进度条同风格的横向滑杆，视觉 6dp、热区 44dp，点击即定位 */
-@Composable
-private fun FlatSlider(
-    value: Float,
-    onValueChange: (Float) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    BoxWithConstraints(
-        modifier
-            .fillMaxWidth()
-            .heightIn(min = 44.dp)
-            .pointerInput(Unit) {
-                awaitEachGesture {
-                    val down = awaitFirstDown(requireUnconsumed = false)
-                    var change = down
-                    val width = size.width.toFloat()
-                    fun fractionOf(x: Float) = (x / width).coerceIn(0f, 1f)
-                    while (change.pressed) {
-                        onValueChange(fractionOf(change.position.x))
-                        change.consume()
-                        change = awaitPointerEvent()
-                            .changes
-                            .firstOrNull { it.id == down.id }
-                            ?: break
-                    }
-                    onValueChange(fractionOf(change.position.x))
-                }
-            },
-        contentAlignment = Alignment.CenterStart
-    ) {
-        val trackWidth = maxWidth
-        val shown by animateFloatAsState(
-            targetValue = value.coerceIn(0f, 1f),
-            animationSpec = tween(120),
-            label = "boostThumb"
-        )
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .height(6.dp)
-                .clip(RoundedCornerShape(3.dp))
-                .background(AppColors.PlayerTrack)
-        ) {
-            Box(
-                Modifier
-                    .fillMaxWidth(shown)
-                    .fillMaxHeight()
-                    .background(Color.White)
-            )
-        }
-        Box(
-            Modifier
-                .size(16.dp)
-                .offset(x = (trackWidth * shown).coerceIn(0.dp, trackWidth - 16.dp))
-                .clip(CircleShape)
-                .background(Color.White)
         )
     }
 }
@@ -1304,7 +1151,7 @@ private fun MiniPill(
                 modifier = Modifier.padding(top = 3.dp)
             )
         }
-        TuningBadges(speed = speed, boost = boost)
+        TuningBadges(speed = speed)
         Spacer(Modifier.width(12.dp))
         PillIconButton(
             icon = Icons.Filled.Replay30,
@@ -1358,15 +1205,12 @@ private fun PillIconButton(
     }
 }
 
-/** 非默认的倍速 / 音量档位角标，默认状态不占位置 */
+/** 非默认倍速角标（只带倍速，迷你条窄），默认状态不占位置 */
 @Composable
-private fun TuningBadges(speed: Float, boost: Int) {
-    if (speed == 1.0f && boost <= VolumeBoost.MIN_PERCENT) return
+private fun TuningBadges(speed: Float) {
+    if (speed == 1.0f) return
     Text(
-        buildList {
-            if (speed != 1.0f) add(formatSpeed(speed))
-            if (boost > VolumeBoost.MIN_PERCENT) add("音量 $boost%")
-        }.joinToString(" · "),
+        formatSpeed(speed),
         style = MaterialTheme.typography.labelSmall,
         color = AppColors.PlayerOption,
         fontWeight = FontWeight.Bold,
@@ -1441,7 +1285,7 @@ private fun MiniBar(
                 modifier = Modifier.padding(top = 3.dp)
             )
         }
-        TuningBadges(speed = speed, boost = boost)
+        TuningBadges(speed = speed)
     }
 }
 

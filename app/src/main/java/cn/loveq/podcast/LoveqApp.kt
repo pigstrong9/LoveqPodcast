@@ -15,6 +15,7 @@ import cn.loveq.podcast.data.RateLimitGuard
 import cn.loveq.podcast.data.ReleaseSource
 import cn.loveq.podcast.data.UpdateCenter
 import cn.loveq.podcast.playback.QueueStore
+import cn.loveq.podcast.playback.VocalBoost
 import cn.loveq.podcast.playback.VolumeBoost
 
 class LoveqApp : Application() {
@@ -68,5 +69,6 @@ class LoveqApp : Application() {
         )
 
         VolumeBoost.apply(progressStore.boostPercent)
+        VocalBoost.apply(progressStore.vocalBoost.value)
     }
 }

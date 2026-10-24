@@ -2,6 +2,7 @@ package cn.loveq.podcast.data
 
 import android.content.Context
 import android.content.SharedPreferences
+import cn.loveq.podcast.playback.SkipBlankDefaults
 import java.util.concurrent.Executors
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -80,6 +81,44 @@ class ProgressStore(context: Context) {
     fun setAutoResume(on: Boolean) {
         _autoResume.value = on
         persist(prefs.edit().putBoolean(KEY_AUTO_RESUME, on))
+    }
+
+    /**
+     * 跳过空白（片头/片尾各跳 N 分钟）。
+     *
+     * 默认关：跳首尾会切掉内容，必须用户明确打开。时长在设置页可调（2–5 分钟），
+     * 底部播放设置面板只负责开关。
+     */
+    private val _skipBlank = MutableStateFlow(prefs.getBoolean(KEY_SKIP_BLANK, false))
+    val skipBlank: StateFlow<Boolean> = _skipBlank
+
+    fun setSkipBlank(on: Boolean) {
+        _skipBlank.value = on
+        persist(prefs.edit().putBoolean(KEY_SKIP_BLANK, on))
+    }
+
+    private val _skipBlankMinutes = MutableStateFlow(
+        prefs.getInt(KEY_SKIP_BLANK_MINUTES, SkipBlankDefaults.MINUTES)
+            .coerceIn(SkipBlankDefaults.MIN_MINUTES, SkipBlankDefaults.MAX_MINUTES)
+    )
+    val skipBlankMinutes: StateFlow<Int> = _skipBlankMinutes
+
+    fun setSkipBlankMinutes(minutes: Int) {
+        val clamped = minutes.coerceIn(
+            SkipBlankDefaults.MIN_MINUTES,
+            SkipBlankDefaults.MAX_MINUTES
+        )
+        _skipBlankMinutes.value = clamped
+        persist(prefs.edit().putInt(KEY_SKIP_BLANK_MINUTES, clamped))
+    }
+
+    /** 人声增强（高通 + 人声频段提亮 + 软限幅），默认关 */
+    private val _vocalBoost = MutableStateFlow(prefs.getBoolean(KEY_VOCAL_BOOST, false))
+    val vocalBoost: StateFlow<Boolean> = _vocalBoost
+
+    fun setVocalBoost(on: Boolean) {
+        _vocalBoost.value = on
+        persist(prefs.edit().putBoolean(KEY_VOCAL_BOOST, on))
     }
 
     /**
@@ -248,6 +287,9 @@ class ProgressStore(context: Context) {
         const val KEY_BOOST = "boost"
         const val KEY_IMMERSIVE = "immersive"
         const val KEY_AUTO_RESUME = "auto_resume"
+        const val KEY_SKIP_BLANK = "skip_blank"
+        const val KEY_SKIP_BLANK_MINUTES = "skip_blank_minutes"
+        const val KEY_VOCAL_BOOST = "vocal_boost"
         const val KEY_THEME_MODE = "theme_mode"
         const val KEY_LIST_CATEGORY = "list_category"
         const val KEY_LIST_YEAR = "list_year"

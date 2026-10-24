@@ -91,6 +91,10 @@ fun AppScreen(
     val isPlaying by viewModel.isPlaying.collectAsStateWithLifecycle()
     val speed by viewModel.speed.collectAsStateWithLifecycle()
     val boostPercent by viewModel.boostPercent.collectAsStateWithLifecycle()
+    val skipBlank by viewModel.skipBlank.collectAsStateWithLifecycle()
+    val skipBlankMinutes by viewModel.skipBlankMinutes.collectAsStateWithLifecycle()
+    val vocalBoost by viewModel.vocalBoost.collectAsStateWithLifecycle()
+    val sleepState by viewModel.sleepState.collectAsStateWithLifecycle()
     val history by viewModel.history.collectAsStateWithLifecycle()
     val index by viewModel.index.collectAsStateWithLifecycle()
     val indexing by viewModel.indexing.collectAsStateWithLifecycle()
@@ -348,62 +352,94 @@ fun AppScreen(
                         selected = state.category,
                         onSelect = viewModel::switchCategory
                     )
-                    EpisodeListPane(
-                        state = state,
-                        progressMap = progressMap,
-                        playingMediaId = playingMediaId,
-                        isPlaying = isPlaying,
-                        lastProgress = lastProgress,
-                        showContinue = playingMediaId == null,
-                        archiveCount = archiveCount,
-                        onPlay = onPlay,
-                        onResumeLast = onResumeLast,
-                        loadNext = viewModel::loadNextPage,
-                        loadPrevious = viewModel::loadPreviousPage,
-                        refresh = viewModel::refresh,
-                        retry = viewModel::retry,
-                        onPickDate = { dateDialogYear = it },
-                        onClearDateFilter = viewModel::clearDateFilter,
-                        // 这里不能再传 topInset：竖屏是 PhoneHeader→胶囊→列表 纵向堆叠，
-                        // PhoneHeader 已经避让过状态栏，而 windowInsetsPadding 只在自己的
-                        // 子树里消费 inset、不会替后面的兄弟节点消费，再 pad 一次
-                        // 就在胶囊和标题之间凭空多出一条状态栏高度的空白
-                        modifier = Modifier.weight(1f),
-                        compact = true,
-                        // 没有侧栏可用，左右滑列表就是换分类的手势；
-                        // 三栏有侧栏常驻，再让列表可滑只会误触
-                        onSwipeCategory = { delta -> viewModel.switchCategoryBy(delta) },
-                        swipeHint = { delta ->
-                            val all = Category.ALL
-                            val i = all.indexOfFirst { it.id == state.category.id }
-                            all.getOrNull(i + delta)?.name
-                        },
-                        selection = selectionArgs
-                    )
-                    AnimatedVisibility(
-                        visible = playingMediaId != null,
-                        enter = slideInVertically(tween(300)) { it } + fadeIn(tween(220)),
-                        exit = slideOutVertically(tween(220)) { it } + fadeOut(tween(180))
-                    ) {
-                        val position by viewModel.positionMs.collectAsStateWithLifecycle()
-                        val duration by viewModel.durationMs.collectAsStateWithLifecycle()
-                        MiniPlayer(
-                            title = nowTitle,
+                    // 迷你胶囊悬浮在列表上（与宽屏一致）：列表滚到胶囊底下，底部避让出胶囊高度
+                    Box(Modifier.weight(1f)) {
+                        EpisodeListPane(
+                            state = state,
+                            progressMap = progressMap,
+                            playingMediaId = playingMediaId,
                             isPlaying = isPlaying,
-                            positionMs = position,
-                            durationMs = duration,
-                            speed = speed,
-                            boost = boostPercent,
-                            onToggle = viewModel::togglePlayPause,
-                            onSeekBack = viewModel::seekBack,
-                            onSeekForward = viewModel::seekForward,
-                            onOpen = { playerSheetOpen = true },
-                            // 横屏用 Apple Music 那种居中胶囊，竖屏仍是底部通栏
-                            centered = landscape
+                            lastProgress = lastProgress,
+                            showContinue = playingMediaId == null,
+                            archiveCount = archiveCount,
+                            onPlay = onPlay,
+                            onResumeLast = onResumeLast,
+                            loadNext = viewModel::loadNextPage,
+                            loadPrevious = viewModel::loadPreviousPage,
+                            refresh = viewModel::refresh,
+                            retry = viewModel::retry,
+                            onPickDate = { dateDialogYear = it },
+                            onClearDateFilter = viewModel::clearDateFilter,
+                            // 这里不能再传 topInset：竖屏是 PhoneHeader→胶囊→列表 纵向堆叠，
+                            // PhoneHeader 已经避让过状态栏，而 windowInsetsPadding 只在自己的
+                            // 子树里消费 inset、不会替后面的兄弟节点消费，再 pad 一次
+                            // 就在胶囊和标题之间凭空多出一条状态栏高度的空白
+                            modifier = Modifier.fillMaxSize(),
+                            compact = true,
+                            // 没有侧栏可用，左右滑列表就是换分类的手势；
+                            // 三栏有侧栏常驻，再让列表可滑只会误触
+                            onSwipeCategory = { delta -> viewModel.switchCategoryBy(delta) },
+                            swipeHint = { delta ->
+                                val all = Category.ALL
+                                val i = all.indexOfFirst { it.id == state.category.id }
+                                all.getOrNull(i + delta)?.name
+                            },
+                            selection = selectionArgs,
+                            bottomInset = if (playingMediaId != null) MINI_PILL_INSET else 0.dp
                         )
+                        androidx.compose.animation.AnimatedVisibility(
+                            visible = playingMediaId != null,
+                            modifier = Modifier.align(Alignment.BottomCenter),
+                            enter = slideInVertically(tween(300)) { it } + fadeIn(tween(220)),
+                            exit = slideOutVertically(tween(220)) { it } + fadeOut(tween(180))
+                        ) {
+                            val position by viewModel.positionMs.collectAsStateWithLifecycle()
+                            val duration by viewModel.durationMs.collectAsStateWithLifecycle()
+                            MiniPlayer(
+                                title = nowTitle,
+                                isPlaying = isPlaying,
+                                positionMs = position,
+                                durationMs = duration,
+                                speed = speed,
+                                boost = boostPercent,
+                                onToggle = viewModel::togglePlayPause,
+                                onSeekBack = viewModel::seekBack,
+                                onSeekForward = viewModel::seekForward,
+                                onOpen = { playerSheetOpen = true },
+                                // 横屏用 Apple Music 那种居中胶囊，竖屏仍是底部通栏
+                                centered = landscape
+                            )
+                        }
                     }
                 }
             }
+        }
+
+        // 播放设置面板：小宇宙式的底部滑出层。宽屏（车机三栏）贴着右缘、
+        // 与右侧播放面板同宽升起；窄屏铺满整宽。开关由播放面板底部的设置按钮控制。
+        // 弹窗内容的高度上限在这里（Activity 作用域）算好传入：MIUI 按内容尺寸
+        // 生成弹窗窗口并居中，内容不钳制时窗口底会伸到屏幕外、贴底内容被裁掉。
+        val statusPad = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+        val sheetWindowMaxHeight = maxHeight - navBottom - statusPad
+        if (tuningOpen && playingMediaId != null) {
+            PlaybackSettingsSheetDialog(
+                sheetWidth = if (wide) playerWidth else null,
+                alignEnd = wide,
+                windowMaxHeight = sheetWindowMaxHeight,
+                speed = speed,
+                boost = boostPercent,
+                skipBlank = skipBlank,
+                skipBlankMinutes = skipBlankMinutes,
+                vocalBoost = vocalBoost,
+                sleep = sleepState,
+                onSpeed = viewModel::setSpeed,
+                onBoost = viewModel::setBoost,
+                onSkipBlank = viewModel::setSkipBlank,
+                onVocalBoost = viewModel::setVocalBoost,
+                onSleepMinutes = viewModel::setSleepMinutes,
+                onSleepAtEnd = viewModel::setSleepAtEpisodeEnd,
+                onDismiss = { tuningOpen = false }
+            )
         }
 
         if (!wide && playerSheetOpen && playingMediaId != null) {
@@ -482,6 +518,8 @@ fun AppScreen(
             onImmersiveChange = viewModel::setImmersive,
             autoResume = autoResume,
             onAutoResumeChange = viewModel::setAutoResume,
+            skipBlankMinutes = skipBlankMinutes,
+            onSkipBlankMinutes = viewModel::setSkipBlankMinutes,
             themeMode = themeMode,
             onThemeModeChange = viewModel::setThemeMode,
             updateStatus = updateStatus,

@@ -45,6 +45,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 class PlaybackService : MediaSessionService() {
@@ -67,6 +70,9 @@ class PlaybackService : MediaSessionService() {
 
     /** 直链过期后的退避重取，与解析任务分开，避免互相取消 */
     private var retryJob: Job? = null
+
+    /** 片尾边界只处理一次；换期/重新起播时复位 */
+    private var finishingCurrent = false
     private var lastSavedId: Long? = null
     private var lastSavedPosition = -1L
 
@@ -130,6 +136,100 @@ class PlaybackService : MediaSessionService() {
             }
         }
         restoredQueue = app.queueStore.load()
+
+        // 睡眠定时：真实计时放服务里，用户退出界面/切后台也照常到点暂停。
+        // 监听 generation（每次设定都自增）而不是 minutes：同值重选时 minutes
+        // 不变、StateFlow 不发射，倒计时无从重启。collectLatest 保证旧循环
+        // 在新设定到达时立刻取消。
+        scope.launch {
+            SleepTimer.state
+                .map { it.generation }
+                .distinctUntilChanged()
+                .collectLatest { _ ->
+                    val minutes = SleepTimer.state.value.minutes
+                        ?: return@collectLatest
+                    var remaining = minutes * 60_000L
+                    SleepTimer.tick(remaining)
+                    while (remaining > 0) {
+                        delay(SLEEP_TICK_MS)
+                        remaining -= SLEEP_TICK_MS
+                        SleepTimer.tick(remaining)
+                    }
+                    player.pause()
+                    SleepTimer.finishCountdown()
+                    PlaybackEvents.report("睡眠定时已到，已暂停播放")
+                }
+        }
+
+        // 片头/片尾跳过与「本集结束暂停」共用一条轻量巡检：
+        // 位置不会发事件，只能轮询；只在播放中跑，暂停时直接返回。
+        scope.launch {
+            while (true) {
+                delay(BOUNDARY_TICK_MS)
+                checkPlaybackBoundary()
+            }
+        }
+    }
+
+    /**
+     * 片尾边界巡检：
+     * · 开了「跳过空白」时，到 duration - N 就当本集结束；
+     * · 开了「定时到本集结束」时，在自然结尾前一点暂停，抢在 ExoPlayer 自动连播之前。
+     */
+    private fun checkPlaybackBoundary() {
+        if (finishingCurrent || pendingLoad) return
+        val p = mediaSession?.player ?: return
+        if (!p.isPlaying) return
+        val duration = p.duration
+        if (duration <= 0) return
+
+        val store = app.progressStore
+        val position = p.currentPosition
+        val skipEnd = SkipBlank.endPositionMs(
+            durationMs = duration,
+            enabled = store.skipBlank.value,
+            minutes = store.skipBlankMinutes.value
+        )
+        val reachedSkipEnd = SkipBlank.reachedEnd(position, skipEnd)
+        val stopAtEnd = SleepTimer.state.value.stopAtEpisodeEnd
+        // 余量必须盖过两次轮询之间位置的前进量：3× 倍速下 400ms 就是 1.2s，
+        // 固定 800ms 的窗口会被整个跳过去
+        val speedEpsilon = (p.playbackParameters.speed * BOUNDARY_TICK_MS * 2).toLong()
+        val nearNaturalEnd = duration - position <= maxOf(NATURAL_END_EPSILON_MS, speedEpsilon)
+
+        when {
+            reachedSkipEnd -> finishCurrent(pause = stopAtEnd)
+            stopAtEnd && nearNaturalEnd -> finishCurrent(pause = true)
+        }
+    }
+
+    /**
+     * 收尾当前这一期。
+     * [pause] = true 用于睡眠定时：停在结尾不连播；否则能连播就连播、到队尾就停。
+     */
+    private fun finishCurrent(pause: Boolean) {
+        if (finishingCurrent) return
+        finishingCurrent = true
+        val p = mediaSession?.player ?: run {
+            finishingCurrent = false
+            return
+        }
+        val index = p.currentMediaItemIndex
+        val episode = queue.getOrNull(index)
+        if (episode != null) {
+            app.progressStore.markDone(episode.id, currentTitle, episode.date)
+            app.downloads.remove(episode.id)
+        }
+        if (pause) {
+            SleepTimer.consumeStopAtEpisodeEnd()
+            p.pause()
+            PlaybackEvents.report("已到本集结尾，睡眠定时暂停")
+        } else if (index + 1 < queue.size) {
+            p.seekToDefaultPosition(index + 1)
+            resolveAndPlay(index + 1)
+        } else {
+            p.pause()
+        }
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession
@@ -328,15 +428,20 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
-    /** 续播：有进度且在有效范围内就跳到上次位置 */
+    /** 续播：有进度且在有效范围内就跳到上次位置；开了「跳过空白」时把片头那 N 分钟让过去 */
     private fun startAtSavedPosition(episode: Episode) {
         val saved = app.progressStore.get(episode.id)
-        val startPos = when {
+        val base = when {
             saved == null || saved.done -> 0L
             saved.durationMs > 0 && saved.positionMs >= saved.durationMs - RESUME_EPSILON_MS -> 0L
             saved.positionMs > RESUME_EPSILON_MS -> saved.positionMs
             else -> 0L
         }
+        val startPos = SkipBlank.startPositionMs(
+            savedPositionMs = base,
+            enabled = app.progressStore.skipBlank.value,
+            minutes = app.progressStore.skipBlankMinutes.value
+        )
         if (startPos > 0) player.seekTo(startPos)
     }
 
@@ -426,6 +531,8 @@ class PlaybackService : MediaSessionService() {
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             val index = player.currentMediaItemIndex
             val episode = queue.getOrNull(index) ?: return
+            // 换期意味着上一期的边界处理已经结束，允许下一期重新触发
+            finishingCurrent = false
             if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO) {
                 // AUTO 只代表「上一期自然播完」：把它标成听完并删掉离线文件。
                 // 这段不能留在 STATE_ENDED 里 —— 队列还有下一期时 ExoPlayer 直接自动连播，
@@ -490,6 +597,14 @@ class PlaybackService : MediaSessionService() {
                     // 离线缓存的节目听完就删：车机存储有限，留着也没用了
                     app.downloads.remove(ended.id)
                 }
+                // 高倍速下轮询可能跳过「接近结尾」的窗口，这里是最后防线：
+                // 开着「定时到本集结束」就在自然结尾停住，绝不自动连播
+                if (SleepTimer.state.value.stopAtEpisodeEnd) {
+                    SleepTimer.consumeStopAtEpisodeEnd()
+                    player.pause()
+                    PlaybackEvents.report("已到本集结尾，睡眠定时暂停")
+                    return
+                }
                 // 仅当结束的正是当前队列项且没有用户点播在途时才自动连播
                 val canAdvance = !pendingLoad && endedId != null &&
                     endedId == queue.getOrNull(player.currentMediaItemIndex)?.id
@@ -525,6 +640,7 @@ class PlaybackService : MediaSessionService() {
         }
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
+            if (isPlaying) finishingCurrent = false
             if (!isPlaying) saveProgress()
         }
     }
@@ -565,6 +681,15 @@ class PlaybackService : MediaSessionService() {
         private const val RESUME_EPSILON_MS = 30_000L
         private const val MAX_URL_RETRIES = 2
 
+        /** 睡眠定时推进粒度：1 秒，误差不超过 1 秒 */
+        private const val SLEEP_TICK_MS = 1_000L
+
+        /** 片尾巡检间隔：位置没有事件可订阅，只能轮询 */
+        private const val BOUNDARY_TICK_MS = 400L
+
+        /** 自然结尾判定余量：抢在 ExoPlayer 自动连播之前暂停 */
+        private const val NATURAL_END_EPSILON_MS = 800L
+
         /**
          * 直链失效后的重取退避。
          *
@@ -600,6 +725,8 @@ private class BoostRenderersFactory(context: Context) : DefaultRenderersFactory(
         // 处理链固定吃 16-bit PCM，避免车机上协商出 float/offload 路径导致 AudioTrack 建不出来
         .setEnableFloatOutput(false)
         .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
-        .setAudioProcessors(arrayOf<AudioProcessor>(VolumeBoostProcessor()))
+        .setAudioProcessors(
+            arrayOf<AudioProcessor>(VocalBoostProcessor(), VolumeBoostProcessor())
+        )
         .build()
 }

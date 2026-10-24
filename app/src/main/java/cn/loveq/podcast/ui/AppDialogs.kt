@@ -5,21 +5,28 @@
 
 package cn.loveq.podcast.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -51,12 +58,14 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import cn.loveq.podcast.data.DownloadManager
 import cn.loveq.podcast.data.ThemeMode
 import cn.loveq.podcast.data.UpdateStatus
 import cn.loveq.podcast.playback.MediaCache
+import cn.loveq.podcast.playback.SkipBlankDefaults
 import cn.loveq.podcast.ui.theme.AppColors
 import java.util.Calendar
 import kotlinx.coroutines.Dispatchers
@@ -204,6 +213,9 @@ internal fun SettingsDialog(
     onImmersiveChange: (Boolean) -> Unit,
     autoResume: Boolean,
     onAutoResumeChange: (Boolean) -> Unit,
+    /** 跳过空白的片头/片尾时长（2–5 分钟）；开关本身在播放设置面板里 */
+    skipBlankMinutes: Int,
+    onSkipBlankMinutes: (Int) -> Unit,
     themeMode: ThemeMode,
     onThemeModeChange: (ThemeMode) -> Unit,
     updateStatus: UpdateStatus,
@@ -233,14 +245,48 @@ internal fun SettingsDialog(
         return
     }
 
-    DialogHost(
-        onDismiss = onDismiss,
-        title = "设置",
-        text = {
+    // 全屏设置页（小宇宙式）：不再是居中小弹窗，内容一屏摊开、自己滚动。
+    // 作为普通覆盖层渲染在应用窗口里（不走 Dialog），天然铺满全屏，
+    // 也绕开了 MIUI 对弹窗窗口「内容尺寸+居中」的摆放怪癖
+    BackHandler(onBack = onDismiss)
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+    ) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .navigationBarsPadding()
+        ) {
+            // 顶栏：标题 + 关闭
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(start = 20.dp, end = 8.dp, top = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "设置",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = AppColors.Ink,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f)
+                )
+                TextButton(onClick = onDismiss) {
+                    Text("关闭", color = AppColors.Red, fontWeight = FontWeight.Bold)
+                }
+            }
             Column(
                 Modifier
-                .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
+                    .weight(1f)
+                    // 车机三栏很宽：内容限宽居中，行不会被拉成通栏
+                    .align(Alignment.CenterHorizontally)
+                    .widthIn(max = 680.dp)
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 20.dp)
             ) {
                 // ---- 显示 ----
                 Text(
@@ -252,8 +298,7 @@ internal fun SettingsDialog(
                 Text("外观", style = MaterialTheme.typography.titleMedium, color = AppColors.Ink)
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "「跟随系统」会跟随手机/车机的日夜模式（比亚迪 DiLink 的夜间模式也会识别）；" +
-                        "车机常年深色也可以固定为深色。",
+                    "跟随手机/车机的日夜模式，或固定不变。",
                     style = MaterialTheme.typography.bodySmall,
                     color = AppColors.Muted
                 )
@@ -261,22 +306,24 @@ internal fun SettingsDialog(
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     ThemeModeChip(
                         label = "跟随系统",
-                        selected = themeMode == ThemeMode.SYSTEM
-                    ) { onThemeModeChange(ThemeMode.SYSTEM) }
+                        selected = themeMode == ThemeMode.SYSTEM,
+                        onClick = { onThemeModeChange(ThemeMode.SYSTEM) }
+                    )
                     ThemeModeChip(
                         label = "浅色",
-                        selected = themeMode == ThemeMode.LIGHT
-                    ) { onThemeModeChange(ThemeMode.LIGHT) }
+                        selected = themeMode == ThemeMode.LIGHT,
+                        onClick = { onThemeModeChange(ThemeMode.LIGHT) }
+                    )
                     ThemeModeChip(
                         label = "深色",
-                        selected = themeMode == ThemeMode.DARK
-                    ) { onThemeModeChange(ThemeMode.DARK) }
+                        selected = themeMode == ThemeMode.DARK,
+                        onClick = { onThemeModeChange(ThemeMode.DARK) }
+                    )
                 }
                 Spacer(Modifier.height(18.dp))
                 SwitchRow(
                     title = "隐藏顶部状态栏",
-                    subtitle = "车机建议开启，顶栏不占画面、内容顶到上沿；" +
-                        "手机和平板建议关闭，才能一直看到时间和通知图标。",
+                    subtitle = "车机建议开启，手机建议关闭。",
                     checked = immersive,
                     onChange = onImmersiveChange
                 )
@@ -292,11 +339,31 @@ internal fun SettingsDialog(
                 Spacer(Modifier.height(10.dp))
                 SwitchRow(
                     title = "启动自动续播",
-                    subtitle = "打开应用就接着上次收听的那期继续播放，不用再点一次「继续播放」。" +
-                        "那期已经听完则不续；不需要一上车就出声时关掉它。",
+                    subtitle = "打开应用自动接着上次那期播放。",
                     checked = autoResume,
                     onChange = onAutoResumeChange
                 )
+                Spacer(Modifier.height(14.dp))
+                Text("跳过空白时长", style = MaterialTheme.typography.titleMedium, color = AppColors.Ink)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "每期自动跳过片头/片尾各 N 分钟，短的节目不跳；开关在播放设置面板。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = AppColors.Muted
+                )
+                Spacer(Modifier.height(10.dp))
+                // 四个按钮等宽分布：包裹内容的写法在窄弹窗里放不下时，
+                // 最后一个会被压缩换行（实测「5 分钟」变形成两行）
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    (SkipBlankDefaults.MIN_MINUTES..SkipBlankDefaults.MAX_MINUTES).forEach { minutes ->
+                        ThemeModeChip(
+                            label = "$minutes 分钟",
+                            selected = skipBlankMinutes == minutes,
+                            onClick = { onSkipBlankMinutes(minutes) },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
 
                 Spacer(Modifier.height(22.dp))
 
@@ -314,9 +381,7 @@ internal fun SettingsDialog(
                 )
                 Spacer(Modifier.height(10.dp))
                 Text(
-                    "听过的片段自动存入本地，重听、续播、回退 30 秒不再消耗流量。" +
-                        "上限按可用空间自动定（最多 2 GB），超过后自动淘汰最久未听的节目；" +
-                        "清理会保留正在收听的一期。",
+                    "重听、续播不耗流量；超限自动清理最久未听的。",
                     style = MaterialTheme.typography.bodySmall,
                     color = AppColors.Muted
                 )
@@ -407,8 +472,7 @@ internal fun SettingsDialog(
                 }
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    "节目列表缓存：浏览过的历史月份会存到本地，再选到同一段不再联网；" +
-                        "当前月还在更新，不参与缓存。",
+                    "浏览过的历史月份本地留存，重选不联网。",
                     style = MaterialTheme.typography.bodySmall,
                     color = AppColors.Muted
                 )
@@ -467,12 +531,10 @@ internal fun SettingsDialog(
                         )
                     }
                 }
+                Spacer(Modifier.height(24.dp))
             }
-        },
-        confirmText = "关闭",
-        onConfirm = onDismiss,
-        dismissText = null
-    )
+        }
+    }
 }
 
 /**
@@ -543,19 +605,21 @@ private fun AboutDialog(onBack: () -> Unit) {
     )
 }
 
-/** 外观三档选择：胶囊样式与日期选择一致 */
+/** 外观三档选择：胶囊样式与日期选择一致；modifier 传入 weight(1f) 可做等宽分布 */
 @Composable
 private fun ThemeModeChip(
     label: String,
     selected: Boolean,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     Text(
         label,
         style = MaterialTheme.typography.bodyMedium,
         fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
         color = if (selected) Color.White else AppColors.Body,
-        modifier = Modifier
+        textAlign = TextAlign.Center,
+        modifier = modifier
             .clip(RoundedCornerShape(12.dp))
             .background(if (selected) AppColors.Red else AppColors.Canvas)
             .clickable(onClick = onClick)

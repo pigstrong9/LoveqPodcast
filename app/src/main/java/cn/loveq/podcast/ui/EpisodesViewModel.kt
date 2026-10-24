@@ -15,6 +15,8 @@ import cn.loveq.podcast.data.ThemeMode
 import cn.loveq.podcast.data.shouldAutoResume
 import cn.loveq.podcast.playback.PlaybackEvents
 import cn.loveq.podcast.playback.PlayerConnection
+import cn.loveq.podcast.playback.SleepTimer
+import cn.loveq.podcast.playback.VocalBoost
 import cn.loveq.podcast.playback.VolumeBoost
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -128,6 +130,30 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
         VolumeBoost.apply(percent)
         store.boostPercent = percent
     }
+
+    /** 跳过空白：默认关，开关在播放设置面板，时长在设置页（2–5 分钟） */
+    val skipBlank: StateFlow<Boolean> = store.skipBlank
+
+    fun setSkipBlank(on: Boolean) = store.setSkipBlank(on)
+
+    val skipBlankMinutes: StateFlow<Int> = store.skipBlankMinutes
+
+    fun setSkipBlankMinutes(minutes: Int) = store.setSkipBlankMinutes(minutes)
+
+    /** 人声增强：开关要同时落到音频线程与本地存储 */
+    val vocalBoost: StateFlow<Boolean> = store.vocalBoost
+
+    fun setVocalBoost(on: Boolean) {
+        VocalBoost.apply(on)
+        store.setVocalBoost(on)
+    }
+
+    /** 睡眠定时是进程级状态，不落盘；计时本身在 PlaybackService 里 */
+    val sleepState: StateFlow<SleepTimer.State> = SleepTimer.state
+
+    fun setSleepMinutes(minutes: Int?) = SleepTimer.setMinutes(minutes)
+
+    fun setSleepAtEpisodeEnd(on: Boolean) = SleepTimer.setStopAtEpisodeEnd(on)
 
     private val pageCache = mutableMapOf<Int, MutableMap<Int, PageResult>>()
     private val _state = MutableStateFlow(ListUiState())
