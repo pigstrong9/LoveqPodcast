@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>一些事一些情 · LoveqPodcast — 非官方第三方播客客户端</title>
+<meta name="description" content="一些事一些情的第三方安卓播客客户端：跳过空白、人声增强、睡眠定时、倍速播放、离线缓存与车机适配。免费、无广告、无账号。">
+<meta property="og:title" content="一些事一些情 · LoveqPodcast">
+<meta property="og:description" content="非官方第三方安卓播客客户端：跳过空白、人声增强、睡眠定时、离线缓存与车机适配。">
+<meta property="og:image" content="https://raw.githubusercontent.com/pigstrong9/LoveqPodcast/main/app/src/main/res/drawable-nodpi/hosts_cover.png">
+<link rel="icon" href="https://raw.githubusercontent.com/pigstrong9/LoveqPodcast/main/app/src/main/res/drawable-nodpi/hosts_cover.png">
+<style>
+  :root {
+    --bg: #17141b;
+    --player: #241e28;
+    --raised: #322c38;
+    --control: #3a3440;
+    --track: #46404c;
+    --red: #ee1c2a;
+    --red-deep: #c4121f;
+    --text: #f2eff5;
+    --sub: #b9b3c2;
+    --meta: #8d8798;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei", sans-serif;
+    line-height: 1.7;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 0 20px; }
+
+  /* ---- hero ---- */
+  header {
+    background:
+      radial-gradient(1200px 500px at 50% -200px, rgba(238,28,42,.14), transparent 70%),
+      var(--player);
+    padding: 56px 0 48px;
+    text-align: center;
+    border-bottom: 1px solid rgba(255,255,255,.06);
+  }
+  .cover {
+    width: 168px; height: 168px;
+    border-radius: 28px;
+    box-shadow: 0 18px 48px rgba(0,0,0,.5), 0 0 0 1px rgba(255,255,255,.08);
+    display: block; margin: 0 auto 22px;
+  }
+  h1 { font-size: 30px; font-weight: 800; letter-spacing: .5px; }
+  .tagline { color: var(--sub); margin-top: 6px; font-size: 15px; }
+  .tagline b { color: var(--text); font-weight: 600; }
+  .version-chip {
+    display: inline-block; margin-top: 16px;
+    background: var(--raised); color: var(--sub);
+    border: 1px solid rgba(255,255,255,.08);
+    border-radius: 999px; padding: 5px 16px; font-size: 13px;
+  }
+  .version-chip b { color: #fff; }
+  .download {
+    display: inline-block; margin-top: 22px;
+    background: var(--red); color: #fff; text-decoration: none;
+    font-size: 17px; font-weight: 700;
+    padding: 14px 46px; border-radius: 16px;
+    box-shadow: 0 10px 30px rgba(238,28,42,.35);
+    transition: transform .15s ease, box-shadow .15s ease;
+  }
+  .download:hover { transform: translateY(-2px); box-shadow: 0 14px 36px rgba(238,28,42,.45); }
+  .download:active { transform: translateY(0); }
+  .dl-meta { color: var(--meta); font-size: 12.5px; margin-top: 12px; }
+
+  /* ---- sections ---- */
+  section { padding: 44px 0 8px; }
+  h2 { font-size: 21px; font-weight: 800; margin-bottom: 18px; }
+  h2::before { content: ""; display: inline-block; width: 4px; height: 18px; background: var(--red); border-radius: 2px; margin-right: 10px; vertical-align: -2px; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+  .card {
+    background: var(--raised); border: 1px solid rgba(255,255,255,.06);
+    border-radius: 16px; padding: 18px 18px 16px;
+  }
+  .card h3 { font-size: 15.5px; font-weight: 700; margin-bottom: 6px; }
+  .card h3 .dot { color: var(--red); margin-right: 6px; }
+  .card p { color: var(--sub); font-size: 13.5px; }
+
+  .log { background: var(--raised); border-radius: 16px; padding: 6px 20px; }
+  .log li { color: var(--sub); font-size: 14px; padding: 9px 0; border-bottom: 1px solid rgba(255,255,255,.05); }
+  .log li:last-child { border-bottom: none; }
+  .log li b { color: var(--text); }
+  .more { display: block; text-align: right; padding: 10px 2px 12px; }
+  .more a { color: var(--red); font-size: 13.5px; text-decoration: none; font-weight: 600; }
+
+  .steps { counter-reset: step; }
+  .steps li {
+    list-style: none; counter-increment: step;
+    background: var(--raised); border-radius: 14px; padding: 14px 16px 14px 54px;
+    margin-bottom: 10px; position: relative; font-size: 14px; color: var(--sub);
+  }
+  .steps li::before {
+    content: counter(step);
+    position: absolute; left: 14px; top: 50%; transform: translateY(-50%);
+    width: 26px; height: 26px; border-radius: 50%;
+    background: var(--control); color: #fff; font-weight: 700; font-size: 13px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .steps li b { color: var(--text); }
+  code { background: var(--control); border-radius: 6px; padding: 1px 7px; font-size: 12.5px; color: var(--text); }
+
+  .notice {
+    background: rgba(238,28,42,.08); border: 1px solid rgba(238,28,42,.25);
+    border-radius: 14px; padding: 14px 16px; color: var(--sub); font-size: 13px;
+  }
+
+  footer {
+    margin-top: 44px; padding: 26px 0 40px; text-align: center;
+    color: var(--meta); font-size: 12.5px;
+    border-top: 1px solid rgba(255,255,255,.06);
+  }
+  footer a { color: var(--sub); text-decoration: none; }
+  footer a:hover { color: var(--red); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <img class="cover" src="https://raw.githubusercontent.com/pigstrong9/LoveqPodcast/main/app/src/main/res/drawable-nodpi/hosts_cover.png" alt="一些事一些情">
+    <h1>一些事一些情</h1>
+    <p class="tagline">非官方第三方安卓客户端 · <b>Hugo &amp; 阿智</b> 的粤语世界</p>
+    <span class="version-chip">最新版本 <b id="version">v1.8</b> · <span id="date">2026-10-24</span></span>
+    <br>
+    <a class="download" id="download" href="https://github.com/pigstrong9/LoveqPodcast/releases/download/v1.8/LoveqPodcast-v1.8.apk">下载 APK</a>
+    <p class="dl-meta" id="dlMeta">Android 7.0+ · 约 5 MB · 免费 · 无广告 · 无账号</p>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <section>
+    <h2>为「一些事一些情」而做</h2>
+    <div class="grid">
+      <div class="card"><h3><span class="dot">●</span>跳过空白</h3>
+        <p>每期自动跳过片头片尾各 2–5 分钟，起播即正片，播完自动连播下一期。</p></div>
+      <div class="card"><h3><span class="dot">●</span>人声增强</h3>
+        <p>高通滤除低频轰鸣、人声频段提亮，行车途中听得更清楚；实时处理、默认关闭。</p></div>
+      <div class="card"><h3><span class="dot">●</span>睡眠定时</h3>
+        <p>倒计时或「播完本集即停」，退出界面照常生效；到点暂停，进度与通知栏保留。</p></div>
+      <div class="card"><h3><span class="dot">●</span>倍速 0.5–3.0×</h3>
+        <p>连续刻度尺 0.1 一档，齿轮震动反馈；进度条右侧直接显示剩余时间。</p></div>
+      <div class="card"><h3><span class="dot">●</span>离线缓存</h3>
+        <p>听过的内容自动缓存，重听、续播、回退 30 秒不耗流量；离线也能整集播放。</p></div>
+      <div class="card"><h3><span class="dot">●</span>车机适配</h3>
+        <p>横屏三栏布局、5:5 分屏、比亚迪 DiLink 日夜模式跟随，方向盘按键可控。</p></div>
+      <div class="card"><h3><span class="dot">●</span>深色模式</h3>
+        <p>跟随系统日夜切换，也可固定深色；播放面板始终保持沉浸深色。</p></div>
+      <div class="card"><h3><span class="dot">●</span>应用内更新</h3>
+        <p>新版本发布后在「设置 → 更新」一键升级，覆盖安装保留全部收听进度。</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>v1.8 更新亮点</h2>
+    <ul class="log">
+      <li><b>播放设置全新升级</b>：底部滑出面板，跳过空白 / 人声增强 / 音量增强磁贴 + 0.5–3.0× 倍速刻度尺 + 睡眠定时卡片</li>
+      <li><b>跳过空白</b>：片头片尾各跳 2–5 分钟（可调），起播即正片、播完自动连播</li>
+      <li><b>人声增强</b>：高通 + 人声提亮 + 软限幅，实时处理</li>
+      <li><b>睡眠定时</b>：倒计时与「定时到本集结束」独立开关，同值重选也会重新计时</li>
+      <li><b>进度条重做</b>：刻度点阵 + 白色播放头，右侧显示剩余时间，拖动有齿轮震动</li>
+      <li><b>播放器卡片式回归</b>：滑入滑出动画，顶部横条点击缩小收起</li>
+    </ul>
+    <div class="more"><a href="https://github.com/pigstrong9/LoveqPodcast/blob/main/CHANGELOG.md">查看完整更新日志 →</a></div>
+  </section>
+
+  <section>
+    <h2>安装</h2>
+    <ol class="steps">
+      <li><b>下载 APK</b>：点上方「下载 APK」，或直接在 <b>设置 → 更新</b> 内检查新版本。</li>
+      <li><b>允许安装</b>：首次安装需允许「来自此来源的应用」；签名校验通过才能升级。</li>
+      <li><b>覆盖安装</b>：已装旧版本直接覆盖，收听进度、离线缓存和历史记录全部保留。</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>校验</h2>
+    <div class="notice">
+      v1.8 APK SHA-256：<br>
+      <code style="word-break: break-all;">4af24058b7c264ae043fcaa669c9eca2388fab17e258cd48985f346615a56607</code>
+      <br><br>
+      校验值随版本更新，最新版本以 <a style="color:var(--red);text-decoration:none" href="https://github.com/pigstrong9/LoveqPodcast/releases/latest">GitHub Releases</a> 页面为准。
+    </div>
+  </section>
+
+  <section>
+    <h2>声明</h2>
+    <div class="notice">
+      本应用是非官方第三方客户端，与 LoveQ 官网及《一些事一些情》节目方无任何隶属关系。节目内容版权归原作者所有；本应用不存储、不分发任何音频，仅代为访问官网公开链接，非商业用途。
+    </div>
+  </section>
+
+</div>
+
+<footer>
+  <div class="wrap">
+    <a href="https://github.com/pigstrong9/LoveqPodcast">GitHub 仓库</a> ·
+    <a href="https://github.com/pigstrong9/LoveqPodcast/releases">全部版本</a> ·
+    <a href="https://github.com/pigstrong9/LoveqPodcast/issues">问题反馈</a>
+    <br>用爱发电 · 非商业开源项目
+  </div>
+</footer>
+
+<script>
+// 动态解析最新 Release：页面无需随版本更新
+(async () => {
+  try {
+    const r = await fetch('https://api.github.com/repos/pigstrong9/LoveqPodcast/releases/latest');
+    if (!r.ok) return;
+    const rel = await r.json();
+    const apk = (rel.assets || []).find(a => a.name.endsWith('.apk'));
+    if (rel.tag_name) document.getElementById('version').textContent = rel.tag_name;
+    if (rel.published_at) document.getElementById('date').textContent = rel.published_at.slice(0, 10);
+    if (apk) {
+      document.getElementById('download').href = apk.browser_download_url;
+      document.getElementById('dlMeta').textContent =
+        `Android 7.0+ · ${(apk.size / 1024 / 1024).toFixed(1)} MB · 免费 · 无广告 · 无账号`;
+    }
+  } catch (e) { /* 静态兜底 */ }
+})();
+</script>
+
+</body>
+</html>
