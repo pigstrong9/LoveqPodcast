@@ -7,164 +7,336 @@
 <meta name="description" content="一些事一些情的第三方安卓播客客户端：跳过空白、人声增强、睡眠定时、倍速播放、离线缓存与车机适配。免费、无广告、无账号。">
 <meta property="og:title" content="一些事一些情 · LoveqPodcast">
 <meta property="og:description" content="非官方第三方安卓播客客户端：跳过空白、人声增强、睡眠定时、离线缓存与车机适配。">
-<meta property="og:image" content="https://raw.githubusercontent.com/pigstrong9/LoveqPodcast/main/app/src/main/res/drawable-nodpi/hosts_cover.png">
+<meta property="og:image" content="https://pigstrong9.github.io/LoveqPodcast/screenshots/player.jpg">
 <link rel="icon" href="https://raw.githubusercontent.com/pigstrong9/LoveqPodcast/main/app/src/main/res/drawable-nodpi/hosts_cover.png">
 <style>
   :root {
-    --bg: #17141b;
+    --bg: #131017;
     --player: #241e28;
     --raised: #322c38;
     --control: #3a3440;
     --track: #46404c;
     --red: #ee1c2a;
-    --red-deep: #c4121f;
-    --text: #f2eff5;
+    --red-soft: rgba(238,28,42,.16);
+    --text: #f4f1f7;
     --sub: #b9b3c2;
-    --meta: #8d8798;
+    --meta: #8b8496;
+    --line: rgba(255,255,255,.07);
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html { scroll-behavior: smooth; }
   body {
-    background: var(--bg);
-    color: var(--text);
+    background: var(--bg); color: var(--text);
     font-family: -apple-system, "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei", sans-serif;
-    line-height: 1.7;
-    -webkit-font-smoothing: antialiased;
+    line-height: 1.7; -webkit-font-smoothing: antialiased; overflow-x: hidden;
   }
-  .wrap { max-width: 880px; margin: 0 auto; padding: 0 20px; }
+  ::selection { background: var(--red); color: #fff; }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 0 22px; }
 
-  /* ---- hero ---- */
-  header {
-    background:
-      radial-gradient(1200px 500px at 50% -200px, rgba(238,28,42,.14), transparent 70%),
-      var(--player);
-    padding: 56px 0 48px;
-    text-align: center;
-    border-bottom: 1px solid rgba(255,255,255,.06);
+  /* ---- 顶部导航 ---- */
+  nav {
+    position: sticky; top: 0; z-index: 50;
+    backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+    background: rgba(19,16,23,.72); border-bottom: 1px solid var(--line);
   }
-  .cover {
-    width: 168px; height: 168px;
-    border-radius: 28px;
-    box-shadow: 0 18px 48px rgba(0,0,0,.5), 0 0 0 1px rgba(255,255,255,.08);
-    display: block; margin: 0 auto 22px;
-  }
-  h1 { font-size: 30px; font-weight: 800; letter-spacing: .5px; }
-  .tagline { color: var(--sub); margin-top: 6px; font-size: 15px; }
-  .tagline b { color: var(--text); font-weight: 600; }
-  .version-chip {
-    display: inline-block; margin-top: 16px;
-    background: var(--raised); color: var(--sub);
-    border: 1px solid rgba(255,255,255,.08);
-    border-radius: 999px; padding: 5px 16px; font-size: 13px;
-  }
-  .version-chip b { color: #fff; }
-  .download {
-    display: inline-block; margin-top: 22px;
+  nav .wrap { display: flex; align-items: center; gap: 12px; height: 58px; }
+  nav img { width: 30px; height: 30px; border-radius: 8px; }
+  nav .name { font-weight: 800; font-size: 15.5px; letter-spacing: .3px; }
+  nav .name small { color: var(--meta); font-weight: 500; margin-left: 8px; font-size: 12px; }
+  nav .sp { flex: 1; }
+  nav a.gh { color: var(--sub); text-decoration: none; font-size: 13.5px; }
+  nav a.gh:hover { color: #fff; }
+  nav a.cta {
     background: var(--red); color: #fff; text-decoration: none;
-    font-size: 17px; font-weight: 700;
-    padding: 14px 46px; border-radius: 16px;
-    box-shadow: 0 10px 30px rgba(238,28,42,.35);
-    transition: transform .15s ease, box-shadow .15s ease;
+    font-size: 13px; font-weight: 700; padding: 8px 18px; border-radius: 10px;
   }
-  .download:hover { transform: translateY(-2px); box-shadow: 0 14px 36px rgba(238,28,42,.45); }
-  .download:active { transform: translateY(0); }
-  .dl-meta { color: var(--meta); font-size: 12.5px; margin-top: 12px; }
 
-  /* ---- sections ---- */
-  section { padding: 44px 0 8px; }
-  h2 { font-size: 21px; font-weight: 800; margin-bottom: 18px; }
-  h2::before { content: ""; display: inline-block; width: 4px; height: 18px; background: var(--red); border-radius: 2px; margin-right: 10px; vertical-align: -2px; }
+  /* ---- Hero ---- */
+  .hero {
+    position: relative; overflow: hidden;
+    background:
+      radial-gradient(900px 420px at 82% 8%, rgba(238,28,42,.18), transparent 65%),
+      radial-gradient(700px 500px at -10% 110%, rgba(238,28,42,.08), transparent 60%),
+      var(--player);
+    border-bottom: 1px solid var(--line);
+  }
+  .hero .wrap {
+    display: grid; grid-template-columns: 1.05fr .95fr; gap: 40px; align-items: center;
+    padding-top: 72px; padding-bottom: 76px; min-height: 560px;
+  }
+  .kicker {
+    display: inline-flex; align-items: center; gap: 8px;
+    color: var(--red); font-size: 13px; font-weight: 700; letter-spacing: 2px;
+    margin-bottom: 16px;
+  }
+  .kicker::before { content: ""; width: 22px; height: 2px; background: var(--red); }
+  .hero h1 { font-size: clamp(34px, 5.2vw, 52px); line-height: 1.18; font-weight: 900; letter-spacing: 1px; }
+  .hero h1 em { font-style: normal; color: var(--red); }
+  .hero .tagline { color: var(--sub); margin-top: 16px; font-size: 16px; max-width: 460px; }
+  .hero .tagline b { color: var(--text); }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 22px; }
+  .chip {
+    background: rgba(255,255,255,.05); border: 1px solid var(--line);
+    border-radius: 999px; padding: 6px 14px; font-size: 12.5px; color: var(--sub);
+  }
+  .cta-row { display: flex; align-items: center; gap: 16px; margin-top: 30px; flex-wrap: wrap; }
+  .download {
+    display: inline-flex; align-items: center; gap: 10px;
+    background: var(--red); color: #fff; text-decoration: none;
+    font-size: 16.5px; font-weight: 800; padding: 15px 34px; border-radius: 15px;
+    box-shadow: 0 12px 34px rgba(238,28,42,.38);
+    transition: transform .18s ease, box-shadow .18s ease;
+  }
+  .download:hover { transform: translateY(-2px); box-shadow: 0 16px 40px rgba(238,28,42,.5); }
+  .download svg { width: 18px; height: 18px; }
+  .dl-meta { color: var(--meta); font-size: 12.5px; line-height: 1.5; }
+  .dl-meta b { color: var(--sub); }
 
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+  /* ---- 手机框 ---- */
+  .phone {
+    width: min(270px, 68vw); margin: 0 auto;
+    border-radius: 42px; padding: 9px;
+    background: linear-gradient(160deg, #3a3341, #15121a 60%);
+    box-shadow:
+      0 30px 80px rgba(0,0,0,.6),
+      0 0 0 1px rgba(255,255,255,.09),
+      0 0 90px rgba(238,28,42,.12);
+    position: relative;
+  }
+  .phone::before {
+    content: ""; position: absolute; top: 17px; left: 50%; transform: translateX(-50%);
+    width: 74px; height: 18px; border-radius: 12px; background: #0b0a0d; z-index: 3;
+  }
+  .phone img {
+    display: block; width: 100%; border-radius: 34px;
+    background: var(--player);
+  }
+  .hero .phone { transform: rotate(3deg); }
+  .hero .phone:hover { transform: rotate(1.5deg) translateY(-6px); }
+  .phone { transition: transform .35s ease; }
+
+  /* ---- 区块通用 ---- */
+  section { padding: 76px 0 10px; }
+  h2 { font-size: clamp(23px, 3vw, 30px); font-weight: 900; letter-spacing: .5px; margin-bottom: 8px; }
+  .section-sub { color: var(--meta); font-size: 14.5px; margin-bottom: 30px; }
+  .kicker-line { width: 34px; height: 3px; background: var(--red); border-radius: 2px; margin-bottom: 14px; }
+
+  /* ---- 界面预览 ---- */
+  .shots {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 26px;
+    align-items: end;
+  }
+  .shot { text-align: center; }
+  .shot:nth-child(2) { transform: translateY(-26px); }
+  .shot .phone:hover { transform: translateY(-8px) scale(1.02); }
+  .shot figcaption { margin-top: 16px; font-size: 14.5px; font-weight: 700; }
+  .shot figcaption span { display: block; color: var(--meta); font-size: 12.5px; font-weight: 400; margin-top: 2px; }
+  @media (max-width: 860px) {
+    .shots {
+      grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: 62%;
+      overflow-x: auto; scroll-snap-type: x mandatory; padding-bottom: 14px;
+      margin: 0 -22px; padding-left: 22px; padding-right: 22px;
+    }
+    .shot { scroll-snap-align: center; }
+    .shot:nth-child(2) { transform: none; }
+  }
+
+  /* ---- 特性 ---- */
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(228px, 1fr)); gap: 14px; }
   .card {
-    background: var(--raised); border: 1px solid rgba(255,255,255,.06);
-    border-radius: 16px; padding: 18px 18px 16px;
+    background: var(--raised); border: 1px solid var(--line);
+    border-radius: 18px; padding: 20px 18px 17px;
+    transition: transform .2s ease, border-color .2s ease;
   }
-  .card h3 { font-size: 15.5px; font-weight: 700; margin-bottom: 6px; }
-  .card h3 .dot { color: var(--red); margin-right: 6px; }
+  .card:hover { transform: translateY(-4px); border-color: rgba(238,28,42,.35); }
+  .card .ic {
+    width: 40px; height: 40px; border-radius: 12px;
+    background: var(--red-soft); color: var(--red);
+    display: flex; align-items: center; justify-content: center; margin-bottom: 12px;
+  }
+  .card .ic svg { width: 21px; height: 21px; }
+  .card h3 { font-size: 15.5px; font-weight: 800; margin-bottom: 5px; }
   .card p { color: var(--sub); font-size: 13.5px; }
 
-  .log { background: var(--raised); border-radius: 16px; padding: 6px 20px; }
-  .log li { color: var(--sub); font-size: 14px; padding: 9px 0; border-bottom: 1px solid rgba(255,255,255,.05); }
+  /* ---- 日志 ---- */
+  .log { background: var(--raised); border-radius: 18px; padding: 8px 22px; border: 1px solid var(--line); }
+  .log li { color: var(--sub); font-size: 14.5px; padding: 11px 0; border-bottom: 1px solid var(--line); list-style: none; }
   .log li:last-child { border-bottom: none; }
   .log li b { color: var(--text); }
-  .more { display: block; text-align: right; padding: 10px 2px 12px; }
-  .more a { color: var(--red); font-size: 13.5px; text-decoration: none; font-weight: 600; }
+  .more { display: block; text-align: right; padding: 12px 2px; }
+  .more a { color: var(--red); font-size: 13.5px; text-decoration: none; font-weight: 700; }
 
+  /* ---- 步骤 ---- */
   .steps { counter-reset: step; }
   .steps li {
     list-style: none; counter-increment: step;
-    background: var(--raised); border-radius: 14px; padding: 14px 16px 14px 54px;
-    margin-bottom: 10px; position: relative; font-size: 14px; color: var(--sub);
+    background: var(--raised); border: 1px solid var(--line); border-radius: 15px;
+    padding: 15px 16px 15px 58px; margin-bottom: 10px; position: relative;
+    font-size: 14px; color: var(--sub);
   }
   .steps li::before {
     content: counter(step);
-    position: absolute; left: 14px; top: 50%; transform: translateY(-50%);
-    width: 26px; height: 26px; border-radius: 50%;
-    background: var(--control); color: #fff; font-weight: 700; font-size: 13px;
+    position: absolute; left: 15px; top: 50%; transform: translateY(-50%);
+    width: 28px; height: 28px; border-radius: 50%;
+    background: var(--red-soft); color: var(--red); font-weight: 800; font-size: 13.5px;
     display: flex; align-items: center; justify-content: center;
   }
   .steps li b { color: var(--text); }
   code { background: var(--control); border-radius: 6px; padding: 1px 7px; font-size: 12.5px; color: var(--text); }
 
   .notice {
-    background: rgba(238,28,42,.08); border: 1px solid rgba(238,28,42,.25);
-    border-radius: 14px; padding: 14px 16px; color: var(--sub); font-size: 13px;
+    background: rgba(238,28,42,.07); border: 1px solid rgba(238,28,42,.22);
+    border-radius: 15px; padding: 15px 17px; color: var(--sub); font-size: 13px;
   }
+  .notice a { color: var(--red); text-decoration: none; font-weight: 600; }
 
   footer {
-    margin-top: 44px; padding: 26px 0 40px; text-align: center;
-    color: var(--meta); font-size: 12.5px;
-    border-top: 1px solid rgba(255,255,255,.06);
+    margin-top: 70px; padding: 30px 0 44px; text-align: center;
+    color: var(--meta); font-size: 12.5px; border-top: 1px solid var(--line);
   }
-  footer a { color: var(--sub); text-decoration: none; }
+  footer .fnav { margin-bottom: 8px; }
+  footer a { color: var(--sub); text-decoration: none; margin: 0 8px; }
   footer a:hover { color: var(--red); }
+
+  /* ---- 滚动渐显 ---- */
+  .reveal { opacity: 0; transform: translateY(26px); transition: opacity .6s ease, transform .6s ease; }
+  .reveal.in { opacity: 1; transform: none; }
+
+  @media (max-width: 860px) {
+    .hero .wrap { grid-template-columns: 1fr; gap: 34px; padding-top: 46px; padding-bottom: 54px; }
+    .hero .phone { display: none; }
+    section { padding: 56px 0 6px; }
+  }
 </style>
 </head>
 <body>
 
-<header>
+<nav>
   <div class="wrap">
-    <img class="cover" src="https://raw.githubusercontent.com/pigstrong9/LoveqPodcast/main/app/src/main/res/drawable-nodpi/hosts_cover.png" alt="一些事一些情">
-    <h1>一些事一些情</h1>
-    <p class="tagline">非官方第三方安卓客户端 · <b>Hugo &amp; 阿智</b> 的粤语世界</p>
-    <span class="version-chip">最新版本 <b id="version">v1.8</b> · <span id="date">2026-10-24</span></span>
-    <br>
-    <a class="download" id="download" href="https://github.com/pigstrong9/LoveqPodcast/releases/download/v1.8/LoveqPodcast-v1.8.apk">下载 APK</a>
-    <p class="dl-meta" id="dlMeta">Android 7.0+ · 约 5 MB · 免费 · 无广告 · 无账号</p>
+    <img src="https://raw.githubusercontent.com/pigstrong9/LoveqPodcast/main/app/src/main/res/drawable-nodpi/hosts_cover.png" alt="">
+    <span class="name">一些事一些情<small>LoveqPodcast</small></span>
+    <span class="sp"></span>
+    <a class="gh" href="https://github.com/pigstrong9/LoveqPodcast">GitHub</a>
+    <a class="cta" id="navDl" href="https://github.com/pigstrong9/LoveqPodcast/releases/download/v1.8/LoveqPodcast-v1.8.apk">下载 v1.8</a>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap">
+    <div>
+      <span class="kicker">非官方第三方客户端 · 免费开源</span>
+      <h1>把「一些事一些情」<br>装进 <em>你的口袋</em></h1>
+      <p class="tagline">
+        专为 <b>Hugo &amp; 阿智</b> 的粤语世界打造的安卓播客客户端——
+        跳过片头片尾、人声增强、睡眠定时、离线缓存，还有为行车而生的车机适配。
+      </p>
+      <div class="chips">
+        <span class="chip">无广告</span>
+        <span class="chip">无账号</span>
+        <span class="chip">免费</span>
+        <span class="chip">Android 7.0+</span>
+      </div>
+      <div class="cta-row">
+        <a class="download" id="download" href="https://github.com/pigstrong9/LoveqPodcast/releases/download/v1.8/LoveqPodcast-v1.8.apk">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M6 11l6 6 6-6"/><path d="M4 21h16"/></svg>
+          下载 APK
+        </a>
+        <div class="dl-meta">
+          最新版本 <b id="version">v1.8</b> · <span id="size">5.0</span> MB<br>
+          <span id="date">2026-10-24</span> 发布 · 覆盖安装保留进度
+        </div>
+      </div>
+    </div>
+    <div class="phone reveal in">
+      <img src="screenshots/player.jpg" alt="全屏播放器：刻度点阵进度条与剩余时间">
+    </div>
   </div>
 </header>
 
 <div class="wrap">
 
   <section>
-    <h2>为「一些事一些情」而做</h2>
-    <div class="grid">
-      <div class="card"><h3><span class="dot">●</span>跳过空白</h3>
-        <p>每期自动跳过片头片尾各 2–5 分钟，起播即正片，播完自动连播下一期。</p></div>
-      <div class="card"><h3><span class="dot">●</span>人声增强</h3>
-        <p>高通滤除低频轰鸣、人声频段提亮，行车途中听得更清楚；实时处理、默认关闭。</p></div>
-      <div class="card"><h3><span class="dot">●</span>睡眠定时</h3>
-        <p>倒计时或「播完本集即停」，退出界面照常生效；到点暂停，进度与通知栏保留。</p></div>
-      <div class="card"><h3><span class="dot">●</span>倍速 0.5–3.0×</h3>
-        <p>连续刻度尺 0.1 一档，齿轮震动反馈；进度条右侧直接显示剩余时间。</p></div>
-      <div class="card"><h3><span class="dot">●</span>离线缓存</h3>
-        <p>听过的内容自动缓存，重听、续播、回退 30 秒不耗流量；离线也能整集播放。</p></div>
-      <div class="card"><h3><span class="dot">●</span>车机适配</h3>
-        <p>横屏三栏布局、5:5 分屏、比亚迪 DiLink 日夜模式跟随，方向盘按键可控。</p></div>
-      <div class="card"><h3><span class="dot">●</span>深色模式</h3>
-        <p>跟随系统日夜切换，也可固定深色；播放面板始终保持沉浸深色。</p></div>
-      <div class="card"><h3><span class="dot">●</span>应用内更新</h3>
-        <p>新版本发布后在「设置 → 更新」一键升级，覆盖安装保留全部收听进度。</p></div>
+    <div class="reveal">
+      <div class="kicker-line"></div>
+      <h2>界面预览</h2>
+      <p class="section-sub">深色沉浸播放器、小宇宙式播放设置、悬浮在列表上的迷你胶囊——左右滑动查看。</p>
+    </div>
+    <div class="shots">
+      <figure class="shot reveal">
+        <div class="phone"><img src="screenshots/player.jpg" alt="全屏播放器" loading="lazy"></div>
+        <figcaption>全屏播放器<span>刻度点阵进度条 · 剩余时间 · 卡片式收起</span></figcaption>
+      </figure>
+      <figure class="shot reveal">
+        <div class="phone"><img src="screenshots/settings.jpg" alt="播放设置面板" loading="lazy"></div>
+        <figcaption>播放设置<span>跳过空白 · 人声增强 · 倍速刻度 · 睡眠定时</span></figcaption>
+      </figure>
+      <figure class="shot reveal">
+        <div class="phone"><img src="screenshots/home.jpg" alt="节目列表与迷你播放条" loading="lazy"></div>
+        <figcaption>节目列表<span>月份筛选 · 悬浮迷你播放条 · 离线标记</span></figcaption>
+      </figure>
     </div>
   </section>
 
   <section>
-    <h2>v1.8 更新亮点</h2>
-    <ul class="log">
+    <div class="reveal">
+      <div class="kicker-line"></div>
+      <h2>为听众做的每一件事</h2>
+      <p class="section-sub">不是通用播客 App 的套壳，每一项功能都围着这一档节目打磨。</p>
+    </div>
+    <div class="grid">
+      <div class="card reveal">
+        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 5l7 7-7 7"/><path d="M4 5l7 7-7 7"/></svg></div>
+        <h3>跳过空白</h3>
+        <p>自动跳过片头片尾各 2–5 分钟，起播即正片，播完自动连播下一期。</p>
+      </div>
+      <div class="card reveal">
+        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 12v0"/><path d="M8 8v8"/><path d="M12 5v14"/><path d="M16 8v8"/><path d="M20 11v2"/></svg></div>
+        <h3>人声增强</h3>
+        <p>高通滤除低频轰鸣、人声频段提亮，行车途中字字清楚；实时处理、默认关闭。</p>
+      </div>
+      <div class="card reveal">
+        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13.5A8.5 8.5 0 1 1 10.5 4a6.5 6.5 0 0 0 9.5 9.5z"/></svg></div>
+        <h3>睡眠定时</h3>
+        <p>倒计时或「播完本集即停」，退出界面照常生效；到点暂停，进度与通知栏保留。</p>
+      </div>
+      <div class="card reveal">
+        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 16a8 8 0 0 1 16 0"/><path d="M12 16l4-5"/><circle cx="12" cy="16" r="1.6"/></svg></div>
+        <h3>倍速 0.5–3.0×</h3>
+        <p>连续刻度尺 0.1 一档、齿轮震动反馈；进度条右侧直接显示剩余时间。</p>
+      </div>
+      <div class="card reveal">
+        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v10"/><path d="M8 9l4 4 4-4"/><path d="M4 17c2 2 4 2 8 2s6 0 8-2"/></svg></div>
+        <h3>离线缓存</h3>
+        <p>听过的内容自动缓存，重听、续播、回退 30 秒不耗流量，离线也能整集播放。</p>
+      </div>
+      <div class="card reveal">
+        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l1.6-4.4A2 2 0 0 1 8.5 7h7a2 2 0 0 1 1.9 1.6L19 13"/><path d="M4 13h16v4a1 1 0 0 1-1 1h-1.5a1 1 0 0 1-1-1v-1h-9v1a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1z"/></svg></div>
+        <h3>车机适配</h3>
+        <p>横屏三栏、5:5 分屏、比亚迪 DiLink 日夜模式跟随，方向盘按键可控。</p>
+      </div>
+      <div class="card reveal">
+        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" stroke="none"/></svg></div>
+        <h3>深色模式</h3>
+        <p>跟随系统日夜切换，也可固定深色；播放面板始终保持沉浸深色。</p>
+      </div>
+      <div class="card reveal">
+        <div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 6.3"/><path d="M20 5v6h-6"/></svg></div>
+        <h3>应用内更新</h3>
+        <p>新版本发布后在「设置 → 更新」一键升级，覆盖安装保留全部收听进度。</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="reveal">
+      <div class="kicker-line"></div>
+      <h2>v1.8 更新亮点</h2>
+      <p class="section-sub">播放设置全面升级——这一版把听播客的高频操作全部重做了一遍。</p>
+    </div>
+    <ul class="log reveal">
       <li><b>播放设置全新升级</b>：底部滑出面板，跳过空白 / 人声增强 / 音量增强磁贴 + 0.5–3.0× 倍速刻度尺 + 睡眠定时卡片</li>
       <li><b>跳过空白</b>：片头片尾各跳 2–5 分钟（可调），起播即正片、播完自动连播</li>
-      <li><b>人声增强</b>：高通 + 人声提亮 + 软限幅，实时处理</li>
+      <li><b>人声增强</b>：高通 + 人声提亮 + 软限幅，实时处理、默认关闭</li>
       <li><b>睡眠定时</b>：倒计时与「定时到本集结束」独立开关，同值重选也会重新计时</li>
       <li><b>进度条重做</b>：刻度点阵 + 白色播放头，右侧显示剩余时间，拖动有齿轮震动</li>
       <li><b>播放器卡片式回归</b>：滑入滑出动画，顶部横条点击缩小收起</li>
@@ -173,27 +345,27 @@
   </section>
 
   <section>
-    <h2>安装</h2>
-    <ol class="steps">
-      <li><b>下载 APK</b>：点上方「下载 APK」，或直接在 <b>设置 → 更新</b> 内检查新版本。</li>
+    <div class="reveal">
+      <div class="kicker-line"></div>
+      <h2>安装</h2>
+      <p class="section-sub">三步开始，不用注册任何账号。</p>
+    </div>
+    <ol class="steps reveal">
+      <li><b>下载 APK</b>：点页面任意「下载」按钮，或直接在 <b>设置 → 更新</b> 内检查新版本。</li>
       <li><b>允许安装</b>：首次安装需允许「来自此来源的应用」；签名校验通过才能升级。</li>
       <li><b>覆盖安装</b>：已装旧版本直接覆盖，收听进度、离线缓存和历史记录全部保留。</li>
     </ol>
   </section>
 
   <section>
-    <h2>校验</h2>
-    <div class="notice">
-      v1.8 APK SHA-256：<br>
-      <code style="word-break: break-all;">4af24058b7c264ae043fcaa669c9eca2388fab17e258cd48985f346615a56607</code>
-      <br><br>
-      校验值随版本更新，最新版本以 <a style="color:var(--red);text-decoration:none" href="https://github.com/pigstrong9/LoveqPodcast/releases/latest">GitHub Releases</a> 页面为准。
+    <div class="reveal">
+      <div class="kicker-line"></div>
+      <h2>校验与声明</h2>
     </div>
-  </section>
-
-  <section>
-    <h2>声明</h2>
-    <div class="notice">
+    <div class="notice reveal">
+      v1.8 APK SHA-256：<br>
+      <code style="word-break: break-all;">4af24058b7c264ae043fcaa669c9eca2388fab17e258cd48985f346615a56607</code><br><br>
+      校验值随版本更新，最新版本以 <a href="https://github.com/pigstrong9/LoveqPodcast/releases/latest">GitHub Releases</a> 页面为准。<br><br>
       本应用是非官方第三方客户端，与 LoveQ 官网及《一些事一些情》节目方无任何隶属关系。节目内容版权归原作者所有；本应用不存储、不分发任何音频，仅代为访问官网公开链接，非商业用途。
     </div>
   </section>
@@ -202,14 +374,23 @@
 
 <footer>
   <div class="wrap">
-    <a href="https://github.com/pigstrong9/LoveqPodcast">GitHub 仓库</a> ·
-    <a href="https://github.com/pigstrong9/LoveqPodcast/releases">全部版本</a> ·
-    <a href="https://github.com/pigstrong9/LoveqPodcast/issues">问题反馈</a>
-    <br>用爱发电 · 非商业开源项目
+    <div class="fnav">
+      <a href="https://github.com/pigstrong9/LoveqPodcast">GitHub 仓库</a>·
+      <a href="https://github.com/pigstrong9/LoveqPodcast/releases">全部版本</a>·
+      <a href="https://github.com/pigstrong9/LoveqPodcast/blob/main/CHANGELOG.md">更新日志</a>·
+      <a href="https://github.com/pigstrong9/LoveqPodcast/issues">问题反馈</a>
+    </div>
+    用爱发电 · 非商业开源项目
   </div>
 </footer>
 
 <script>
+// 滚动渐显
+const io = new IntersectionObserver(es => es.forEach(e => {
+  if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); }
+}), { threshold: .12 });
+document.querySelectorAll('.reveal').forEach(el => io.observe(el));
+
 // 动态解析最新 Release：页面无需随版本更新
 (async () => {
   try {
@@ -217,12 +398,15 @@
     if (!r.ok) return;
     const rel = await r.json();
     const apk = (rel.assets || []).find(a => a.name.endsWith('.apk'));
-    if (rel.tag_name) document.getElementById('version').textContent = rel.tag_name;
+    if (rel.tag_name) {
+      document.getElementById('version').textContent = rel.tag_name;
+      document.getElementById('navDl').textContent = '下载 ' + rel.tag_name;
+    }
     if (rel.published_at) document.getElementById('date').textContent = rel.published_at.slice(0, 10);
     if (apk) {
       document.getElementById('download').href = apk.browser_download_url;
-      document.getElementById('dlMeta').textContent =
-        `Android 7.0+ · ${(apk.size / 1024 / 1024).toFixed(1)} MB · 免费 · 无广告 · 无账号`;
+      document.getElementById('navDl').href = apk.browser_download_url;
+      document.getElementById('size').textContent = (apk.size / 1024 / 1024).toFixed(1);
     }
   } catch (e) { /* 静态兜底 */ }
 })();
