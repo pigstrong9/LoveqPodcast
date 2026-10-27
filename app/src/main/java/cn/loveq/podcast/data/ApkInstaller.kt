@@ -8,6 +8,7 @@ import android.content.pm.Signature
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import android.util.Log
 import androidx.core.content.FileProvider
 import androidx.core.content.pm.PackageInfoCompat
 import java.io.File
@@ -37,9 +38,13 @@ internal class ApkInstaller(private val context: Context) {
      * 系统也会拒绝安装，但那已经是装到一半才失败，而且报的错和「包坏了」混在一起。
      */
     fun isTrusted(file: File): Boolean {
-        val archive = archiveCertDigests(file) ?: return false
-        val installed = installedCertDigests() ?: return false
-        return archive == installed
+        val archive = archiveCertDigests(file)
+        val installed = installedCertDigests()
+        if (archive != null && installed != null) return archive == installed
+        // 读不到也失败关闭，但要说清是哪一侧读不到：界面只会报「校验失败」，
+        // 分不出「签名真不一致」和「这台机器读不出证书」是两件完全不同的事
+        Log.w(TAG, "签名不可判定 archive=$archive installed=$installed")
+        return false
     }
 
     /** Android 8 起才有「按应用授予未知来源」这回事；更低版本由系统总开关决定 */
@@ -81,23 +86,36 @@ internal class ApkInstaller(private val context: Context) {
     /** 下载包的证书摘要集合；任一环节不满足都返回 null（调用方按不可信处理） */
     private fun archiveCertDigests(file: File): Set<String>? {
         val info = archiveInfo(file, archiveFlags()) ?: return null
-        return signaturesToDigests(
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                info.signingInfo?.apkContentsSigners
-            } else {
-                @Suppress("DEPRECATION")
-                info.signatures
-            }
-        )
+        val modern = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            info.signingInfo?.apkContentsSigners
+        } else {
+            null
+        }
+        @Suppress("DEPRECATION")
+        val legacy = info.signatures
+        return signaturesToDigests(modern) ?: signaturesToDigests(legacy)
     }
 
-    /** 已装应用自己的证书摘要集合；用 PackageInfoCompat 以避开 API 28 前后的差异 */
-    private fun installedCertDigests(): Set<String>? = runCatching {
-        signaturesToDigests(
+    /**
+     * 已装应用自己的证书摘要集合；用 PackageInfoCompat 以避开 API 28 前后的差异。
+     *
+     * 读不到时再退回老接口兜一次：车机上 `signingInfo` 可能为空，而
+     * `GET_SIGNATURES` 那条路仍然可用。失败关闭不该建立在「一次读不到就判死」上。
+     */
+    private fun installedCertDigests(): Set<String>? {
+        val modern = runCatching {
             PackageInfoCompat.getSignatures(context.packageManager, context.packageName)
                 .toTypedArray()
-        )
-    }.getOrNull()
+        }.getOrNull()
+        signaturesToDigests(modern)?.let { return it }
+        return runCatching {
+            @Suppress("DEPRECATION")
+            val legacy = context.packageManager
+                .getPackageInfo(context.packageName, PackageManager.GET_SIGNATURES)
+                .signatures
+            signaturesToDigests(legacy)
+        }.getOrNull()
+    }
 
     private fun signaturesToDigests(signatures: Array<Signature>?): Set<String>? {
         if (signatures.isNullOrEmpty()) return null
@@ -108,11 +126,26 @@ internal class ApkInstaller(private val context: Context) {
         }
     }
 
-    private fun archiveFlags(): Int =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            PackageManager.GET_SIGNING_CERTIFICATES
+    /**
+     * 必须把 GET_SIGNING_CERTIFICATES 和**已废弃的** GET_SIGNATURES 一起传。
+     *
+     * Android 9/10 上只给新版 flag 时，`getPackageArchiveInfo` 会返回
+     * `signingInfo == null`（Google issue 159537841），而系统安装器走的是另一条路，
+     * 照样能覆盖安装 —— 于是车机（DiLink 4.0，Android 10）上表现为
+     * 「手动装得上、应用内却永远校验失败」。两个 flag 都带时新旧两条路都能读到证书，
+     * 证书本身与用哪个 flag 读到无关，比对逻辑不用动。
+     */
+    private fun archiveFlags(): Int {
+        @Suppress("DEPRECATION")
+        val legacy = PackageManager.GET_SIGNATURES
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            PackageManager.GET_SIGNING_CERTIFICATES or legacy
         } else {
-            @Suppress("DEPRECATION")
-            PackageManager.GET_SIGNATURES
+            legacy
         }
+    }
+
+    private companion object {
+        const val TAG = "ApkInstaller"
+    }
 }
