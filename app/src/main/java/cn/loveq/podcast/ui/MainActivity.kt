@@ -7,6 +7,7 @@ import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
@@ -25,6 +26,7 @@ import androidx.lifecycle.lifecycleScope
 import cn.loveq.podcast.LoveqApp
 import cn.loveq.podcast.data.ThemeMode
 import cn.loveq.podcast.ui.theme.LoveqTheme
+import cn.loveq.podcast.ui.theme.loveqPlayerColor
 import cn.loveq.podcast.ui.theme.loveqWindowBackground
 import kotlinx.coroutines.launch
 
@@ -67,7 +69,11 @@ class MainActivity : ComponentActivity() {
             }
             LoveqTheme(darkTheme = dark) {
                 LaunchedEffect(dark) { applyWindowChrome(dark) }
-                AppScreen(onRequestNotificationPermission = ::requestNotificationPermissionIfNeeded)
+                AppScreen(
+                    onRequestNotificationPermission = ::requestNotificationPermissionIfNeeded,
+                    multiWindow = isMultiWindowNow(),
+                    onPlayerOverlayChange = ::onPlayerOverlayChange
+                )
             }
         }
     }
@@ -105,13 +111,66 @@ class MainActivity : ComponentActivity() {
         ThemeMode.DARK -> true
     }
 
+    /** 播放层是否盖满窗口（由 AppScreen 通知）；分屏时窗口底色跟着换成播放器深色 */
+    private var playerOverlayOpen = false
+
+    /** 最近一次应用的深浅色：播放层开关时不必再去问主题，直接复用 */
+    private var chromeDark = false
+
+    /** 播放层开关时只补一次窗口底色，不重建任何 UI */
+    private fun onPlayerOverlayChange(open: Boolean) {
+        if (playerOverlayOpen == open) return
+        playerOverlayOpen = open
+        applyWindowChrome(chromeDark)
+    }
+
+    /**
+     * 窗口面积明显小于屏幕就当作多窗口：比亚迪 DiLink 这类 OEM 的分屏
+     * 有可能只把窗口缩小、不上报标准多窗口标志。
+     * 全屏时两者相等（留 5% 余量给挖孔/内缩），不会误判。
+     */
+    private fun windowLooksShrunk(): Boolean {
+        val maxArea = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val b = windowManager.maximumWindowMetrics.bounds
+            (b.right - b.left).toLong() * (b.bottom - b.top)
+        } else {
+            val p = android.graphics.Point()
+            @Suppress("DEPRECATION")
+            windowManager.defaultDisplay.getRealSize(p)
+            p.x.toLong() * p.y
+        }
+        if (maxArea <= 0L) return false
+        val dm = resources.displayMetrics
+        val area = dm.widthPixels.toLong() * dm.heightPixels
+        return area in 1 until maxArea * 95 / 100
+    }
+
+    /** 是否处于多窗口：标准标志优先，OEM 缩窗兜底 */
+    private fun isMultiWindowNow(): Boolean = isInMultiWindowMode || windowLooksShrunk()
+
     /** 系统栏图标和窗口底色一起切，避免设置里换外观时露出旧底色 */
     private fun applyWindowChrome(dark: Boolean) {
+        chromeDark = dark
         WindowCompat.getInsetsController(window, window.decorView).apply {
             isAppearanceLightStatusBars = !dark
             isAppearanceLightNavigationBars = !dark
         }
-        window.setBackgroundDrawable(ColorDrawable(loveqWindowBackground(dark).toArgb()))
+        // 分屏时应用内容被排在状态栏下面，空出来的那一条露出的是窗口底色。
+        // 播放层打开时把它也换成播放器深色，卡片和顶部就连成一整块，
+        // 否则浅色主题下会看到「系统状态栏一条 + 播放器顶栏一条」两层。
+        // 全屏时内容铺满窗口，这块底色看不见，改了也没有副作用。
+        // 这里刻意不动状态栏图标明暗：分屏时状态栏是整屏共用的，车机上又没有图标，
+        // 强行改成浅色会让另一栏（比如左边的地图）上的图标看不清。
+        val overlay = playerOverlayOpen && isMultiWindowNow()
+        val background = if (overlay) loveqPlayerColor(dark) else loveqWindowBackground(dark)
+        window.setBackgroundDrawable(ColorDrawable(background.toArgb()))
+        // 车机上分屏不一定按标准多窗口实现：这行日志用来确认标志位和实际底色，
+        // 排查「顶栏还是两层」时先看这里。
+        Log.i(
+            "WindowChrome",
+            "overlay=$overlay multiFlag=$isInMultiWindowMode shrunk=${windowLooksShrunk()} " +
+                "bg=#%08X".format(background.toArgb())
+        )
     }
 
     /** 弹窗、切后台等场景会重置沉浸标记，焦点回来时按当前设置重新应用 */

@@ -228,6 +228,11 @@ fun PlayerSheet(
     tuningVisible: Boolean,
     onRequestTuning: () -> Unit,
     onClose: () -> Unit,
+    /**
+     * 分屏时窗口顶上还露着状态栏占位：去掉卡片缝隙和顶部圆角，
+     * 让深色直接接上 Activity 染好的窗口底色，视觉上只剩一层顶栏。
+     */
+    bleedTop: Boolean = false,
     /** 状态栏避让量：隐藏状态栏时为 0，车机行为不变 */
     topInset: WindowInsets = WindowInsets(0.dp, 0.dp, 0.dp, 0.dp)
 ) {
@@ -276,11 +281,11 @@ fun PlayerSheet(
                 modifier = Modifier
                     .fillMaxSize()
                     .windowInsetsPadding(topInset)
-                    .padding(top = CARD_TOP_MARGIN)
+                    .then(if (bleedTop) Modifier else Modifier.padding(top = CARD_TOP_MARGIN))
                     .clip(
                         RoundedCornerShape(
-                            topStart = CARD_CORNER,
-                            topEnd = CARD_CORNER
+                            topStart = if (bleedTop) 0.dp else CARD_CORNER,
+                            topEnd = if (bleedTop) 0.dp else CARD_CORNER
                         )
                     )
                     .background(AppColors.Player)

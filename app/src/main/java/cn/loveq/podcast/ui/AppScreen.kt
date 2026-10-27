@@ -5,6 +5,7 @@
 
 package cn.loveq.podcast.ui
 
+import android.util.Log
 import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
@@ -82,7 +83,14 @@ private const val CACHE_POLL_MS = 30_000L
 @Composable
 fun AppScreen(
     viewModel: EpisodesViewModel = viewModel(),
-    onRequestNotificationPermission: () -> Unit
+    onRequestNotificationPermission: () -> Unit,
+    /**
+     * 是否处于多窗口（分屏/浮窗）。由 Activity 传入：
+     * LocalContext 在 Compose 里可能被 ContextThemeWrapper 包一层，as? Activity 会拿到 null。
+     */
+    multiWindow: Boolean = false,
+    /** 播放层是否盖满窗口：分屏时 Activity 要把窗口底色换成播放器深色 */
+    onPlayerOverlayChange: (Boolean) -> Unit = {}
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val progressMap by viewModel.progressMap.collectAsStateWithLifecycle()
@@ -212,6 +220,20 @@ fun AppScreen(
         // 车机分屏后的半幅窗口虽然可能宽度过线，但接近方形，
         // 摆下侧栏+列表+播放面板后中间列表会比手机还窄，所以这种比例要走窄屏。
         val wide = maxWidth >= ThreePaneThreshold && maxWidth >= maxHeight * ThreePaneAspect
+
+        // 播放层打开时让 Activity 把窗口底色也切成播放器深色：
+        // 分屏顶部那条状态栏占位露的就是窗口底色，不跟着换就会多出一层浅色顶栏。
+        LaunchedEffect(multiWindow, wide, playerSheetOpen, playingMediaId) {
+            // 车机上如果顶栏还是两层，先看这行：multi 为 false 说明系统没把分屏
+            // 上报成多窗口（MainActivity 里另有按窗口面积的兜底）
+            if (playerSheetOpen) {
+                Log.i(
+                    "WindowChrome",
+                    "sheet multi=$multiWindow wide=$wide media=$playingMediaId"
+                )
+            }
+            onPlayerOverlayChange(multiWindow && !wide && playerSheetOpen && playingMediaId != null)
+        }
         val landscape = maxWidth > maxHeight
         val sidebarWidth = (maxWidth * 0.17f).coerceIn(196.dp, 252.dp)
         val playerWidth = (maxWidth * 0.30f).coerceIn(320.dp, 424.dp)
@@ -465,6 +487,9 @@ fun AppScreen(
                     tuningOpen = false
                     playerSheetOpen = false
                 },
+                // 分屏时顶上还露着状态栏占位，卡片不再留缝、不再切圆角，
+                // 让深色直接接到已经被 Activity 染成同色的窗口底色上
+                bleedTop = multiWindow,
                 topInset = topInset
             )
         }

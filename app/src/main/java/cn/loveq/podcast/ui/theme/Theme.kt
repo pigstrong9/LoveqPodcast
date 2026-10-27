@@ -293,3 +293,10 @@ fun LoveqTheme(darkTheme: Boolean, content: @Composable () -> Unit) {
 /** 窗口底色：冷启动和 Activity 重建时，Compose 首帧之前也不能闪成反色 */
 fun loveqWindowBackground(dark: Boolean): Color =
     if (dark) DarkPalette.canvas else LightPalette.canvas
+
+/**
+ * 播放层底色：分屏时窗口顶部会露出状态栏那一条窗口底色，
+ * 播放层打开时把它也换成这个色，才能和播放卡片连成一整块。
+ */
+fun loveqPlayerColor(dark: Boolean): Color =
+    if (dark) DarkPalette.player else LightPalette.player
