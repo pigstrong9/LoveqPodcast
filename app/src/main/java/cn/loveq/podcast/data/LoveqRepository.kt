@@ -38,12 +38,13 @@ class LoveqRepository(
         .readTimeout(30, TimeUnit.SECONDS)
         // 整体超时：车机 4G 上单个请求卡死会一直占着线程
         .callTimeout(60, TimeUnit.SECONDS)
-        // 登录墙之后，访问 program_download 需要带上官网下发的会话 Cookie。
-        // 只对 loveq.cn 发送，避免把登录态带给别的域名。
+        // 只对 loveq.cn 发送 Cookie，避免把登录态带给别的域名；且列表页是公开的，
+        // 不带登录态，减少把浏览行为绑到账号上的暴露面。
         .addInterceptor { chain ->
             val request = chain.request()
-            val loveq = request.url.host.endsWith("loveq.cn")
-            val outgoing = if (loveq) {
+            // 发和收共用同一个判断，避免条件漂移。
+            val sessionRequest = isSessionRequest(request.url.host, request.url.encodedPath)
+            val outgoing = if (sessionRequest) {
                 session.cookieHeader()?.let {
                     request.newBuilder().header("Cookie", it).build()
                 } ?: request
@@ -51,8 +52,11 @@ class LoveqRepository(
                 request
             }
             val response = chain.proceed(outgoing)
-            if (loveq) {
-                // 登录成功、匿名会话、刷新过期时间都会走这里
+            // 列表页不收 Set-Cookie：没带 Cookie 时官网会下发匿名 LQ_ID，
+            // 它和登录态 LQ_ID 同名，merge 会覆盖掉登录态，导致下次取播放链接时
+            // 带的是匿名 Cookie、登录失效。匿名播种由 login() 抓 user-login 页完成，
+            // 不依赖列表页。其余官网响应照收：登录态下发、过期时间刷新都靠它。
+            if (sessionRequest) {
                 session.saveCookies(response.headers.values("Set-Cookie"))
             }
             response
@@ -290,17 +294,31 @@ class LoveqRepository(
         const val CRAWL_DELAY_MS = 1_500L
 
         /**
-         * UA 保留浏览器主体（免得被 WAF 一眼挡掉），后面追加自己的身份。
+         * 通用浏览器 UA，只保留主体，不追加客户端身份。
          *
-         * 不伪装成官方客户端，也不轮换 UA：被认出来是好事 —— 官网要拦、要联系，
-         * 都找得到人。轮换 UA 去规避拦截是另一码事，不在这里做。
+         * 保留浏览器主体是因为 CDN 防盗链会拒掉裸 OkHttp/ExoPlayer 的 UA；
+         * 不追加 LoveqPodcast 字样，是不让官网按 UA 直接标记出第三方客户端。
+         * 这是「不主动自报」，不是「伪装」：不冒充 loveq 官方客户端，不轮换 UA，
+         * 也不做指纹或行为层面的对抗式规避 —— 固定一颗常见浏览器 UA 比轮换更自然。
          */
         const val USER_AGENT =
             "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) " +
-                "Chrome/126.0 Mobile Safari/537.36 " +
-                "LoveqPodcast/1.5 (+https://github.com/pigstrong9/LoveqPodcast)"
+                "Chrome/126.0 Mobile Safari/537.36"
     }
 }
+
+/**
+ * 该请求是否参与会话 Cookie 的收发（带上 Cookie、并收下 Set-Cookie）。
+ *
+ * 两条规则：
+ * - 只认 loveq.cn，别把登录态带给别的域名（如 GitHub 更新源）；
+ * - 列表页 `/program.html` 是公开的，不带登录态，减少浏览行为与账号的关联。
+ *
+ * 精确匹配 path —— 不能用 contains("program")，`program_download` 也含这个词。
+ * 抽成纯函数是为了能在 JVM 单测里覆盖，避免"发/收条件不一致"这种隐蔽回归。
+ */
+internal fun isSessionRequest(host: String, encodedPath: String): Boolean =
+    host.endsWith("loveq.cn") && encodedPath != "/program.html"
 
 /**
  * 官网要求登录后才能继续访问。
