@@ -34,6 +34,7 @@ import cn.loveq.podcast.R
 import cn.loveq.podcast.data.AudioParseException
 import cn.loveq.podcast.data.Episode
 import cn.loveq.podcast.data.EpisodeAudio
+import cn.loveq.podcast.data.LoginRequiredException
 import cn.loveq.podcast.data.LoveqRepository
 import cn.loveq.podcast.data.RateLimitedException
 import com.google.common.util.concurrent.Futures
@@ -244,6 +245,7 @@ class PlaybackService : MediaSessionService() {
             }
             val sessionCommands = MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS.buildUpon()
                 .add(SessionCommand(CMD_PLAY_QUEUE, Bundle.EMPTY))
+                .add(SessionCommand(CMD_RETRY_CURRENT, Bundle.EMPTY))
                 .build()
             return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
                 .setAvailableSessionCommands(sessionCommands)
@@ -295,6 +297,13 @@ class PlaybackService : MediaSessionService() {
                 if (items.isNotEmpty()) {
                     playQueue(items, start)
                 }
+                return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+            }
+            if (customCommand.customAction == CMD_RETRY_CURRENT) {
+                // 登录成功后由界面触发：用刚拿到的 Cookie 重新解析当前这一期。
+                // 必须强制起播 —— 首次播放撞墙时 playWhenReady 还是 false，
+                // 按原意图续播会停在已解析但暂停的状态。
+                resumeCurrentWithFreshUrl(forcePlay = true)
                 return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
             }
             return Futures.immediateFuture(SessionResult(SessionResult.RESULT_ERROR_NOT_SUPPORTED))
@@ -419,6 +428,12 @@ class PlaybackService : MediaSessionService() {
                         e is RateLimitedException ->
                             "《$label》暂时无法播放：官网限制了访问，" +
                                 "约 ${app.rateLimitGuard.describeRemaining()}后自动恢复"
+                        // 登录墙不是解析失败：自动弹登录框，登录成功后由界面发
+                        // RetryCurrent 命令重新解析这一期
+                        e is LoginRequiredException -> {
+                            AuthEvents.requestLogin()
+                            "《$label》需要登录 LoveQ 官网后才能播放"
+                        }
                         e is AudioParseException ->
                             "《$label》取不到音频地址，应用解析规则需要更新"
                         else -> "《$label》加载失败，请检查网络后重试"
@@ -479,12 +494,12 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
-    private fun resumeCurrentWithFreshUrl() {
+    private fun resumeCurrentWithFreshUrl(forcePlay: Boolean = false) {
         // 地址过期/断流要重新解析，先清掉「正在解析」标记，否则会被自己的守卫挡掉
         resolvingIndex = -1
         // playWhenReady 才代表用户的播放意图：出错时 isPlaying 已经是 false，
         // 用它判断会把「用户主动暂停」也误恢复成播放
-        val wantedPlaying = player.playWhenReady
+        val wantedPlaying = forcePlay || player.playWhenReady
         resolveAndPlay(
             index = player.currentMediaItemIndex,
             autoplay = wantedPlaying,
@@ -667,6 +682,8 @@ class PlaybackService : MediaSessionService() {
 
     companion object {
         const val CMD_PLAY_QUEUE = "cn.loveq.podcast.action.PLAY_QUEUE"
+        /** 登录成功后重新解析当前一期：不重建队列，沿用原位置 */
+        const val CMD_RETRY_CURRENT = "cn.loveq.podcast.action.RETRY_CURRENT"
         const val EXTRA_ITEMS = "items"
         const val EXTRA_START = "start"
         const val SEP = "\u0001"

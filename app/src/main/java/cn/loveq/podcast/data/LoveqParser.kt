@@ -47,6 +47,11 @@ object LoveqParser {
      */
     fun parseAudio(html: String, baseUri: String): EpisodeAudio {
         val doc = Jsoup.parse(html, baseUri)
+        // 登录墙可能以 200 + 登录页的形式出现（不只是 302）：先认页面本身，
+        // 免得把「请登录」误报成「解析规则需要更新」。
+        if (doc.selectFirst("#formLogin") != null || doc.title().contains("会员登录")) {
+            throw LoginRequiredException()
+        }
         val urls = (
             doc.select("audio[src]").map { it.attr("abs:src") } +
                 doc.select("audio source[src]").map { it.attr("abs:src") } +

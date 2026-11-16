@@ -4,25 +4,59 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import okhttp3.Call
 import okhttp3.Callback
+import okhttp3.FormBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
+import org.json.JSONException
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 
-class LoveqRepository(private val guard: RateLimitGuard) {
+class LoveqRepository(
+    private val guard: RateLimitGuard,
+    private val session: LoveqSession
+) {
+
+    /**
+     * 官网登录态。界面只读这个 StateFlow 判断是否显示「已登录」；
+     * 真正的失效以请求被 302 到登录页为准（见 [LoginRequiredException]）。
+     */
+    val account: StateFlow<String?> = session.username
+
+    /** 上次登录过的账号，仅用于登录框回填 */
+    val lastUsername: StateFlow<String?> = session.lastUsername
 
     private val client: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         // 整体超时：车机 4G 上单个请求卡死会一直占着线程
         .callTimeout(60, TimeUnit.SECONDS)
+        // 登录墙之后，访问 program_download 需要带上官网下发的会话 Cookie。
+        // 只对 loveq.cn 发送，避免把登录态带给别的域名。
+        .addInterceptor { chain ->
+            val request = chain.request()
+            val loveq = request.url.host.endsWith("loveq.cn")
+            val outgoing = if (loveq) {
+                session.cookieHeader()?.let {
+                    request.newBuilder().header("Cookie", it).build()
+                } ?: request
+            } else {
+                request
+            }
+            val response = chain.proceed(outgoing)
+            if (loveq) {
+                // 登录成功、匿名会话、刷新过期时间都会走这里
+                session.saveCookies(response.headers.values("Set-Cookie"))
+            }
+            response
+        }
         .build()
 
     /** 全局闸门的锁只保护「预约时间槽」那一瞬间，不覆盖网络请求本身 */
@@ -40,7 +74,108 @@ class LoveqRepository(private val guard: RateLimitGuard) {
 
     suspend fun fetchAudio(episodeId: Long): EpisodeAudio {
         val html = fetch("$SITE/program_download-$episodeId.html")
-        return withContext(Dispatchers.Default) { LoveqParser.parseAudio(html, SITE) }
+        return withContext(Dispatchers.Default) {
+            try {
+                LoveqParser.parseAudio(html, SITE)
+            } catch (e: LoginRequiredException) {
+                // 登录墙也可能以 200 + 登录页返回：fetch 只认 302 重定向，
+                // 这里补上登录态失效，免得设置页仍显示「已登录」
+                session.onAuthRequired()
+                throw e
+            }
+        }
+    }
+
+    /**
+     * 用用户自己的 LoveQ 账号登录。
+     *
+     * 官网登录页的 `signIn()` 就是 POST `user.php?act=signin`，只带
+     * username / password / captcha；成功后官网通过 Set-Cookie 把会话写进
+     * `LQ_ID`（由上面的拦截器统一收下）。这里**不保存密码**。
+     *
+     * 第一次登录通常不需要验证码；密码错几次后官网会返回 `captcha=1`，
+     * 此时去取 `get_img.php?is_login=1` 的图片，让用户补输。
+     */
+    suspend fun login(username: String, password: String, captcha: String): LoginOutcome {
+        // 从设置主动登录时，本机可能还没访问过官网（没有匿名 LQ_ID）。
+        // 先取一次登录页播种会话，否则官网的验证码/登录态对不上。
+        if (session.cookieHeader() == null) {
+            fetch("$SITE/user-login.html")
+        }
+
+        throwIfCooling("$SITE/user.php?act=signin")
+        awaitTurn()
+
+        val body = withContext(Dispatchers.IO) {
+            val form = FormBody.Builder()
+                .add("username", username)
+                .add("password", password)
+                .add("captcha", captcha)
+                .add("cookietime", "2592000")
+                .add("back_act", "$SITE/")
+                .build()
+            val request = Request.Builder()
+                .url("$SITE/user.php?act=signin")
+                .header("User-Agent", USER_AGENT)
+                .header("Referer", "$SITE/user-login.html")
+                .header("Origin", SITE)
+                .header("X-Requested-With", "XMLHttpRequest")
+                .header("Accept", "application/json, text/javascript, */*; q=0.01")
+                .post(form)
+                .build()
+            client.newCall(request).execute().use { response ->
+                if (response.code == 405 || response.code == 403 ||
+                    response.code == HTTP_TOO_MANY_REQUESTS
+                ) {
+                    guard.onRateLimited()
+                    throw RateLimitedException(response.code, request.url.toString())
+                }
+                if (!response.isSuccessful) throw IOException("HTTP ${response.code}")
+                guard.onSuccess()
+                response.body?.string().orEmpty()
+            }
+        }
+
+        return withContext(Dispatchers.Default) {
+            val reply = try {
+                LoginReply.parse(body)
+            } catch (_: JSONException) {
+                return@withContext LoginOutcome.Failure("官网登录接口返回异常，请稍后重试")
+            }
+            when {
+                reply.error == 0 -> {
+                    session.markLoggedIn(username)
+                    LoginOutcome.Success(username)
+                }
+                reply.captcha -> LoginOutcome.CaptchaRequired(
+                    image = loadCaptchaImage(),
+                    message = reply.message.ifBlank { "请输入验证码" }
+                )
+                else -> LoginOutcome.Failure(reply.message.ifBlank { "登录失败" })
+            }
+        }
+    }
+
+    /** 验证码图片。拿不到就返回 null，界面仍保留手输入口。 */
+    suspend fun loadCaptchaImage(): ByteArray? {
+        throwIfCooling("$SITE/get_img.php")
+        awaitTurn()
+        return withContext(Dispatchers.IO) {
+            val request = Request.Builder()
+                .url("$SITE/get_img.php?is_login=1&t=${System.currentTimeMillis()}")
+                .header("User-Agent", USER_AGENT)
+                .header("Referer", "$SITE/user-login.html")
+                .build()
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@withContext null
+                response.body?.bytes()
+            }
+        }
+    }
+
+    /** 退出登录：清掉本机保存的 Cookie 和用户名，下次播放会重新弹登录框 */
+    fun logout() {
+        session.logout()
     }
 
     /**
@@ -74,6 +209,17 @@ class LoveqRepository(private val guard: RateLimitGuard) {
                 override fun onResponse(call: Call, response: Response) {
                     val body = try {
                         response.use { r ->
+                            // 官网从 2026-11-16 起对 program_download 加登录墙：
+                            // 未登录会被 302 到 loveq.cn/user-login.html。
+                            // 必须在解析 HTML 之前认出来，否则只会得到一个含糊的
+                            // 「音频地址解析失败」，让人误以为是解析规则过期。
+                            // 主动抓登录页播种 Cookie 时不算撞墙。
+                            if (!url.contains("user-login") &&
+                                r.request.url.toString().contains("user-login")
+                            ) {
+                                session.onAuthRequired()
+                                throw LoginRequiredException()
+                            }
                             if (!r.isSuccessful) {
                                 // 405/403/429 是官网对访问频率的拒绝，不是网络故障：
                                 // 先落冷却再抛，绝不能混进 IOException 被上层当成抖动重试
@@ -155,3 +301,12 @@ class LoveqRepository(private val guard: RateLimitGuard) {
                 "LoveqPodcast/1.5 (+https://github.com/pigstrong9/LoveqPodcast)"
     }
 }
+
+/**
+ * 官网要求登录后才能继续访问。
+ *
+ * 和「解析规则过期」「网络失败」都不同：它有一个明确的用户动作 ——
+ * 在应用内用自己的 LoveQ 账号登录。不要把登录墙降级成普通 IOException，
+ * 否则错误提示只会让人去检查网络或等更新。
+ */
+class LoginRequiredException : IOException("官网要求登录后才能获取音频")

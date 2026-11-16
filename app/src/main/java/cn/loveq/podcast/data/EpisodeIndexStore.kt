@@ -1,6 +1,7 @@
 package cn.loveq.podcast.data
 
 import android.content.Context
+import cn.loveq.podcast.playback.AuthEvents
 import cn.loveq.podcast.playback.PlaybackEvents
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -115,6 +116,11 @@ class EpisodeIndexStore(context: Context, private val guard: RateLimitGuard) {
             // 必须报出来 —— 静默吞掉会让列表和搜索莫名少一截，用户完全无从判断
             announceCooldownOnce()
             guard.blockedForMs() + RESUME_MARGIN_MS
+        } catch (_: LoginRequiredException) {
+            // 列表页也被墙了：索引抓不动，先把登录框叫出来。
+            // 登录后由用户下拉刷新续抓，不在循环里反复敲门
+            AuthEvents.requestLogin(AuthEvents.Retry.NONE)
+            null
         }
     }
 
@@ -181,6 +187,9 @@ class EpisodeIndexStore(context: Context, private val guard: RateLimitGuard) {
         } catch (e: RateLimitedException) {
             // 交给 advanceIndex：由它统一提示 + 排下一次续抓，别在这里各写一份
             throw e
+        } catch (e: LoginRequiredException) {
+            // 同样交给 advanceIndex：它会弹出登录框并结束本轮
+            throw e
         } catch (_: Exception) {
             // 已抓页面均已落盘，下次启动自动续抓
         } finally {
@@ -216,6 +225,8 @@ class EpisodeIndexStore(context: Context, private val guard: RateLimitGuard) {
         } catch (e: CancellationException) {
             throw e
         } catch (e: RateLimitedException) {
+            throw e
+        } catch (e: LoginRequiredException) {
             throw e
         } catch (_: Exception) {
         } finally {

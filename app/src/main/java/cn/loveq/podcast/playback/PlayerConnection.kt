@@ -188,6 +188,14 @@ class PlayerConnection(context: Context) {
         controller?.setPlaybackSpeed(value)
     }
 
+    /** 登录成功后重新解析当前一期；服务未连上时静默忽略，用户再点播放也会走同一套 */
+    fun retryCurrent() {
+        controller?.sendCustomCommand(
+            SessionCommand(PlaybackService.CMD_RETRY_CURRENT, Bundle.EMPTY),
+            Bundle.EMPTY
+        )
+    }
+
     fun release() {
         scope.cancel()
         MediaController.releaseFuture(controllerFuture)

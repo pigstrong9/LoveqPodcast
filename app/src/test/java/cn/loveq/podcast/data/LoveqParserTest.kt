@@ -196,4 +196,31 @@ class LoveqParserTest {
             LoveqParser.parseAudio(detail, base).url
         )
     }
+
+    @Test
+    fun `200 返回的登录页要判定为需要登录而不是解析规则过期`() {
+        // 官网登录墙不一定是 302：抓到的也可能是 200 + 登录页。
+        // 认不出来就会报「解析规则需要更新」，把用户引到错误的方向。
+        val loginPage = """
+            <html>
+            <head><title>会员登录_一些事一些情</title></head>
+            <body><form id="formLogin" action="user.php" method="post"></form></body>
+            </html>
+        """.trimIndent()
+
+        assertThrows(LoginRequiredException::class.java) {
+            LoveqParser.parseAudio(loginPage, base)
+        }
+    }
+
+    @Test
+    fun `仅靠标题也能认出登录页`() {
+        val loginPage = """
+            <html><head><title>会员登录_一些事一些情</title></head><body></body></html>
+        """.trimIndent()
+
+        assertThrows(LoginRequiredException::class.java) {
+            LoveqParser.parseAudio(loginPage, base)
+        }
+    }
 }

@@ -2,6 +2,7 @@ package cn.loveq.podcast.data
 
 import android.content.Context
 import android.os.StatFs
+import cn.loveq.podcast.playback.AuthEvents
 import cn.loveq.podcast.playback.PlaybackEvents
 import java.io.File
 import java.util.concurrent.TimeUnit
@@ -241,12 +242,19 @@ class DownloadManager(context: Context, private val repository: LoveqRepository)
                 throw e
             }
             updateEntry(episode.id) { it.copy(state = State.FAILED) }
-            // 被限流和普通失败要分开说：前者点重试没用，得等冷却过去
+            // 被限流、登录墙和普通失败要分开说：前两者点重试没用，得等冷却或先登录
             PlaybackEvents.report(
-                if (e is RateLimitedException) {
-                    "《${episode.date}》离线缓存失败：官网暂时限制了访问，请稍后再试"
-                } else {
-                    "《${episode.date}》离线缓存失败，可点重试"
+                when {
+                    e is RateLimitedException ->
+                        "《${episode.date}》离线缓存失败：官网暂时限制了访问，请稍后再试"
+                    e is LoginRequiredException -> {
+                        AuthEvents.requestLogin(
+                            AuthEvents.Retry.DOWNLOAD,
+                            episode.id
+                        )
+                        "《${episode.date}》离线缓存失败：官网要求登录后才能下载"
+                    }
+                    else -> "《${episode.date}》离线缓存失败，可点重试"
                 }
             )
         } finally {

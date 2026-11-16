@@ -206,6 +206,10 @@ private fun DateChip(label: String, selected: Boolean, onClick: () -> Unit) {
 
 @Composable
 internal fun SettingsDialog(
+    /** 当前登录的官网账号；null = 未登录（日常使用不需要） */
+    account: String?,
+    onLogin: () -> Unit,
+    onLogout: () -> Unit,
     cacheBytes: Long?,
     cacheCapBytes: Long,
     downloads: List<DownloadManager.Entry>,
@@ -288,6 +292,46 @@ internal fun SettingsDialog(
                     .verticalScroll(rememberScrollState())
                     .padding(horizontal = 20.dp)
             ) {
+                // ---- 账号 ----
+                Text(
+                    "账号",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = AppColors.Muted
+                )
+                Spacer(Modifier.height(10.dp))
+                if (account != null) {
+                    Text(
+                        "已登录：$account",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = AppColors.Ink
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "登录态只用于官网要求登录的音频，平时浏览与收听不需要登录。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = AppColors.Muted
+                    )
+                    TextButton(onClick = onLogout) {
+                        Text("退出登录", color = AppColors.Muted)
+                    }
+                } else {
+                    Text(
+                        "未登录",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = AppColors.Ink
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "平时无需登录，官网要求登录时会自动弹框；也可以在这里提前登录。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = AppColors.Muted
+                    )
+                    TextButton(onClick = onLogin) {
+                        Text("登录 LoveQ 账号", color = AppColors.Red, fontWeight = FontWeight.Bold)
+                    }
+                }
+                Spacer(Modifier.height(22.dp))
+
                 // ---- 显示 ----
                 Text(
                     "显示",

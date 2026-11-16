@@ -8,11 +8,14 @@ import cn.loveq.podcast.data.Category
 import cn.loveq.podcast.data.Episode
 import cn.loveq.podcast.data.EpisodeCacheStore
 import cn.loveq.podcast.data.LoveqParser
+import cn.loveq.podcast.data.LoginOutcome
+import cn.loveq.podcast.data.LoginRequiredException
 import cn.loveq.podcast.data.PageResult
 import cn.loveq.podcast.data.Progress
 import cn.loveq.podcast.data.RateLimitedException
 import cn.loveq.podcast.data.ThemeMode
 import cn.loveq.podcast.data.shouldAutoResume
+import cn.loveq.podcast.playback.AuthEvents
 import cn.loveq.podcast.playback.PlaybackEvents
 import cn.loveq.podcast.playback.PlayerConnection
 import cn.loveq.podcast.playback.SleepTimer
@@ -91,6 +94,39 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
     val connection = PlayerConnection(app)
     val progressMap: StateFlow<Map<Long, Progress>> = store.progressMap
     val lastId: StateFlow<Long?> = store.lastId
+
+    /** 官网登录成功后的用户名；null = 未登录或登录已失效 */
+    val account: StateFlow<String?> = repo.account
+
+    /** 上次登录过的账号，登录框回填用；不代表当前登录态 */
+    val lastUsername: StateFlow<String?> = repo.lastUsername
+
+    /** 官网登录墙出现时由界面调用；密码只交给官网，不落盘 */
+    suspend fun login(username: String, password: String, captcha: String): LoginOutcome =
+        repo.login(username, password, captcha)
+
+    suspend fun loadCaptcha(): ByteArray? = repo.loadCaptchaImage()
+
+    fun logout() {
+        repo.logout()
+        PlaybackEvents.report("已退出 LoveQ 账号")
+    }
+
+    /** 登录成功后重新解析当前这一期，不重建连播队列 */
+    fun retryCurrentPlayback() = connection.retryCurrent()
+
+    /**
+     * 浏览、翻页、日期跳转撞上登录墙时把登录框叫出来。
+     *
+     * 官网的卡控可能从音频页扩到列表页。静默显示「网络异常」会把排查方向带偏，
+     * 而用户能做的动作只有登录。登录后停在原错误页，由用户点重试或下拉刷新，
+     * 不在这里自动重放请求（那可能和用户的翻页操作打架）。
+     */
+    private fun requestLoginIfRequired(e: Exception): Boolean {
+        if (e !is LoginRequiredException) return false
+        AuthEvents.requestLogin(AuthEvents.Retry.NONE)
+        return true
+    }
 
     /** 全库索引（粤语节目，主节目归档），供搜索使用 */
     val index: StateFlow<List<Episode>> = loveqApp.indexStore.episodes
@@ -329,6 +365,7 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
                 throw e
             } catch (e: Exception) {
                 if (loadGen != gen) return@launch
+                val loginRequired = requestLoginIfRequired(e)
                 // 断网不该只给一屏错误：粤语节目有全库磁盘索引，
                 // 离线时照样能翻列表、续播已缓存的期
                 val fallback = if (catId == Category.CANTONESE_ID) {
@@ -341,15 +378,18 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
                     // 就把整屏换成错误页 —— 那是把能看到的东西弄没了。
                     // 这条分支列表没变，所以也不能清筛选：清了标题就和列出不符了
                     if (_state.value.episodes.isNotEmpty()) {
-                        PlaybackEvents.report("刷新失败，显示的是上次加载的内容")
+                        PlaybackEvents.report(
+                            if (loginRequired) "需要登录 LoveQ 官网后才能刷新"
+                            else "刷新失败，显示的是上次加载的内容"
+                        )
                     } else {
                         _state.update {
                             it.copy(
                                 initialLoading = false,
-                                error = if (e is RateLimitedException) {
-                                    rateLimitText()
-                                } else {
-                                    "加载失败：${e.message ?: "网络异常"}"
+                                error = when {
+                                    loginRequired -> "需要登录 LoveQ 官网后才能加载"
+                                    e is RateLimitedException -> rateLimitText()
+                                    else -> "加载失败：${e.message ?: "网络异常"}"
                                 }
                             ).withoutFilter(clearFilter)
                         }
@@ -421,9 +461,13 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: Exception) {
                 if (loadGen != gen) return@launch
                 _state.update { it.copy(refreshing = false, initialLoading = false) }
+                val loginRequired = requestLoginIfRequired(e)
                 PlaybackEvents.report(
-                    if (e is RateLimitedException) "刷新失败：${rateLimitText()}"
-                    else "刷新失败，请检查网络"
+                    when {
+                        loginRequired -> "刷新失败：需要登录 LoveQ 官网"
+                        e is RateLimitedException -> "刷新失败：${rateLimitText()}"
+                        else -> "刷新失败，请检查网络"
+                    }
                 )
             }
         }
@@ -480,6 +524,7 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                requestLoginIfRequired(e)
                 if (loadGen == gen) _state.update { it.copy(loadingDown = false, loadMoreError = true) }
                 // 页脚那个「加载失败，点此重试」对限流是误导：点多少次都还是失败
                 if (e is RateLimitedException) PlaybackEvents.report(rateLimitText())
@@ -519,6 +564,7 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                requestLoginIfRequired(e)
                 if (loadGen == gen) _state.update { it.copy(loadingUp = false) }
             }
         }
@@ -611,6 +657,7 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                requestLoginIfRequired(e)
                 if (loadGen == gen) {
                     _state.update {
                         if (older) it.copy(loadingDown = false, loadMoreError = true)
@@ -841,10 +888,14 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                val loginRequired = requestLoginIfRequired(e)
                 if (loadGen == gen) {
                     PlaybackEvents.report(
-                        if (e is RateLimitedException) "跳转失败：${rateLimitText()}"
-                        else "跳转失败，请检查网络"
+                        when {
+                            loginRequired -> "跳转失败：需要登录 LoveQ 官网"
+                            e is RateLimitedException -> "跳转失败：${rateLimitText()}"
+                            else -> "跳转失败，请检查网络"
+                        }
                     )
                 }
             } finally {

@@ -52,6 +52,7 @@ import cn.loveq.podcast.data.Episode
 import cn.loveq.podcast.data.Progress
 import cn.loveq.podcast.data.UpdateStatus
 import cn.loveq.podcast.playback.MediaCache
+import cn.loveq.podcast.playback.AuthEvents
 import cn.loveq.podcast.playback.PlaybackEvents
 import cn.loveq.podcast.ui.theme.AppColors
 import kotlinx.coroutines.Dispatchers
@@ -112,6 +113,9 @@ fun AppScreen(
     val autoResume by viewModel.autoResume.collectAsStateWithLifecycle()
     val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
     val updateStatus by viewModel.updateStatus.collectAsStateWithLifecycle()
+    val account by viewModel.account.collectAsStateWithLifecycle()
+    val lastUsername by viewModel.lastUsername.collectAsStateWithLifecycle()
+    val loginRequest by AuthEvents.loginRequired.collectAsStateWithLifecycle()
     val currentVersion = remember { viewModel.currentVersionName() }
     val showUpdateDot = updateStatus is UpdateStatus.Available
 
@@ -126,6 +130,8 @@ fun AppScreen(
     var dateDialogYear by rememberSaveable { mutableIntStateOf(0) }
     var playerSheetOpen by rememberSaveable { mutableStateOf(false) }
     var settingsOpen by rememberSaveable { mutableStateOf(false) }
+    // 设置页主动点「登录」时打开；和撞墙事件共用同一个登录框
+    var settingsLoginOpen by rememberSaveable { mutableStateOf(false) }
     // 音量增强 / 倍速设置层：常驻面板与迷你面板共用同一个开关
     var tuningOpen by rememberSaveable { mutableStateOf(false) }
     val toggleTuning: () -> Unit = { tuningOpen = !tuningOpen }
@@ -198,6 +204,33 @@ fun AppScreen(
     }
 
     ErrorToasts()
+
+    // 只有在真正撞上登录墙（playback/download 里发出的 AuthEvents）或用户从设置
+    // 主动登录时才出现；平时浏览、收听全程匿名。
+    if (loginRequest != null || settingsLoginOpen) {
+        LoginDialog(
+            initialUsername = lastUsername.orEmpty(),
+            onLogin = viewModel::login,
+            onLoadCaptcha = viewModel::loadCaptcha,
+            onDismiss = {
+                AuthEvents.dismissLogin()
+                settingsLoginOpen = false
+            },
+            onLoggedIn = {
+                val request = loginRequest
+                AuthEvents.dismissLogin()
+                settingsLoginOpen = false
+                when (request?.retry) {
+                    AuthEvents.Retry.DOWNLOAD ->
+                        request.episodeId?.let(viewModel::retryOffline)
+                    AuthEvents.Retry.CURRENT_PLAYBACK ->
+                        viewModel.retryCurrentPlayback()
+                    AuthEvents.Retry.NONE, null -> Unit
+                }
+                PlaybackEvents.report("已登录 LoveQ 账号")
+            }
+        )
+    }
 
     val currentEp = currentEpisode(state.episodes, playingMediaId, progressMap)
     val nowTitle = metaTitle ?: currentEp?.title?.ifBlank { currentEp.date } ?: ""
@@ -535,6 +568,9 @@ fun AppScreen(
 
     if (settingsOpen) {
         SettingsDialog(
+            account = account,
+            onLogin = { settingsLoginOpen = true },
+            onLogout = viewModel::logout,
             cacheBytes = cacheBytes,
             // 上限在首次 get() 时按可用空间算定后就不再变，这里直接读那份快照
             cacheCapBytes = MediaCache.capBytes,

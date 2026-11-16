@@ -9,6 +9,7 @@ import cn.loveq.podcast.data.EpisodeIndexStore
 import cn.loveq.podcast.data.FixtureReleaseSource
 import cn.loveq.podcast.data.GithubReleases
 import cn.loveq.podcast.data.LoveqRepository
+import cn.loveq.podcast.data.LoveqSession
 import cn.loveq.podcast.data.PrefsSourceMemory
 import cn.loveq.podcast.data.ProgressStore
 import cn.loveq.podcast.data.RateLimitGuard
@@ -21,6 +22,8 @@ import cn.loveq.podcast.playback.VolumeBoost
 class LoveqApp : Application() {
 
     lateinit var rateLimitGuard: RateLimitGuard
+        private set
+    lateinit var session: LoveqSession
         private set
     lateinit var repository: LoveqRepository
         private set
@@ -45,7 +48,8 @@ class LoveqApp : Application() {
         // 限流守卫要先于 repository/indexStore 建好：三者共用同一份冷却状态，
         // 保证「被官网拒过」这件事在整个进程里只记一次、也只等一次
         rateLimitGuard = RateLimitGuard(this)
-        repository = LoveqRepository(rateLimitGuard)
+        session = LoveqSession(this)
+        repository = LoveqRepository(rateLimitGuard, session)
         progressStore = ProgressStore(this)
         carNightMode = CarNightMode(this)
         indexStore = EpisodeIndexStore(this, rateLimitGuard)
