@@ -34,6 +34,15 @@ internal class ApkInstaller(private val context: Context) {
     }
 
     /**
+     * 读包内真实的 versionName，用于给下载目录里的文件命名。
+     *
+     * 必须用**包内**的版本而不是 [UpdateCenter.currentVersionName]（当前已装版本）：
+     * 车机用户是照 UI 提示的文件名去下载目录点安装的，写成旧版本号会让人点到旧包。
+     */
+    fun versionNameOf(file: File): String? =
+        archiveInfo(file, flags = 0)?.versionName?.takeIf { it.isNotBlank() }
+
+    /**
      * 下载包的签名证书是否与**已装应用**完全一致。
      *
      * 比的是证书摘要集合，不是「能装上就行」：版本号相同、包名相同但签名不同的包，
@@ -68,6 +77,16 @@ internal class ApkInstaller(private val context: Context) {
      * 同名文件先删再写，避免反复升级在下载目录堆一堆版本。
      */
     fun publishToDownloads(file: File, displayName: String): String? = runCatching {
+        // 同名先删：MediaStore 不会覆盖，只会生成 "xxx (1).apk"，
+        // 反复升级会在下载目录堆一堆版本，用户根本分不清点哪个。
+        // 删除失败不阻断写入 —— 最坏是多个同名文件，比装不上强。
+        runCatching {
+            context.contentResolver.delete(
+                MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                "${MediaStore.MediaColumns.DISPLAY_NAME}=?",
+                arrayOf(displayName)
+            )
+        }
         val values = ContentValues().apply {
             put(MediaStore.Downloads.DISPLAY_NAME, displayName)
             put(MediaStore.Downloads.MIME_TYPE, "application/vnd.android.package-archive")
@@ -92,16 +111,26 @@ internal class ApkInstaller(private val context: Context) {
     }.getOrNull()
 
     /**
-     * 打开系统文件选择器，让用户进「下载」目录点 APK 安装。
+     * 打开能让用户**点击 APK 直接安装**的文件管理器视图。
      *
-     * 用 ACTION_GET_CONTENT 且只看 apk 类型：跨厂商最稳，车机换了文件管理器
-     * 也还能选到文件。不指定起始 URI（各厂商 DocumentsUI 的 tree URI 不一致，
-     * 写死反而在定制系统上打不开）；UI 文案会告诉用户去「下载」目录找。
-     * 调用方需容错：部分系统没有文件选择器时 startActivity 会抛。
+     * 关键：不能用 ACTION_GET_CONTENT —— 那是「选一个文件返回给调用方」的语义，
+     * 用户点 APK 只是选中、不会触发安装，与我们的目的相反。
+     * 首选 ACTION_VIEW 浏览 Downloads 集合，这种视图里点 APK 会当成打开文件、
+     * 交给系统安装器；只有它在本机没有处理器时才退回 GET_CONTENT（至少能找到文件）。
+     *
+     * 用 [resolveActivity] 选真正能打开的那个，避免把 ActivityNotFoundException
+     * 留给 UI。各厂商 tree URI 不一致，这里用 MediaStore 的集合 URI 而非硬编码路径。
      */
-    fun openDownloads(): Intent = Intent(Intent.ACTION_GET_CONTENT)
-        .setType("application/vnd.android.package-archive")
-        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    fun openDownloads(): Intent {
+        val browse = Intent(Intent.ACTION_VIEW)
+            .setDataAndType(MediaStore.Downloads.EXTERNAL_CONTENT_URI, "vnd.android.document/directory")
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        if (browse.resolveActivity(context.packageManager) != null) return browse
+
+        return Intent(Intent.ACTION_GET_CONTENT)
+            .setType("application/vnd.android.package-archive")
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
 
     private companion object {
         const val TAG = "ApkInstaller"
@@ -210,8 +239,10 @@ internal class ApkInstaller(private val context: Context) {
 /**
  * 版本门控纯函数，便于 JVM 单测锁定边界。
  *
- * 分界线取 API 29（Android 10）：DiLink 4 正好落在这条线上。
- * API 30+ 一律走原方案 —— 原生「安装未知应用」流程是正常的，
- * 没有理由为一个只在定制车机上出现的问题改动高版本行为。
+ * 只认 API 29（Android 10）—— DiLink 4 正是这个版本，且只有这颗定制系统
+ * 阉割了「安装未知应用」设置页。不取 `<=29` 的两个原因：
+ * - API 26-28 的原生设置页正常，走原方案即可，无需兼容路径；
+ * - [MediaStore.Downloads] 是 API 29 才引入的，低版本上写下载目录会失败。
+ * API 30+ 原生流程同样正常，一律走原方案。
  */
-internal fun useCompatInstall(sdkInt: Int): Boolean = sdkInt <= Build.VERSION_CODES.Q
+internal fun useCompatInstall(sdkInt: Int): Boolean = sdkInt == Build.VERSION_CODES.Q

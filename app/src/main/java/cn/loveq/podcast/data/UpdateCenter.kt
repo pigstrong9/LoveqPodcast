@@ -207,7 +207,17 @@ internal class UpdateCenter(
      * 返回是否成功；失败时给出明确状态，不让用户对着一个不存在的入口发懵。
      */
     private fun prepareManualInstall(file: File): Boolean {
-        val name = "LoveqPodcast-v${currentVersionName()}.apk"
+        // 文件名必须是**下载到的新版本**，不是当前已装版本 ——
+        // 车机用户是照这个名字去下载目录点安装的，写旧版本会让人点到旧包。
+        // 包内版本名读不到就失败关闭，绝不拿当前版本名兜底把错误名字带给用户。
+        val newVersion = installer.versionNameOf(file)
+        if (newVersion == null) {
+            _status.value = UpdateStatus.Failed(
+                FailureKind.INSTALL, "无法读取安装包版本，请在系统设置中允许本应用安装应用"
+            )
+            return false
+        }
+        val name = "LoveqPodcast-v$newVersion.apk"
         val published = installer.publishToDownloads(file, name)
         if (published == null) {
             _status.value = UpdateStatus.Failed(
