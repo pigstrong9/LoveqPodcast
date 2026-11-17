@@ -590,6 +590,7 @@ fun AppScreen(
             onInstallPending = viewModel::installPendingUpdate,
             onOpenReleasePage = viewModel::openReleasePage,
             onRequestUnknownSources = viewModel::unknownSourcesIntent,
+            onOpenDownloads = viewModel::openDownloads,
             onRemove = viewModel::removeOffline,
             onRetry = viewModel::retryOffline,
             onCleared = { cacheTick++ },

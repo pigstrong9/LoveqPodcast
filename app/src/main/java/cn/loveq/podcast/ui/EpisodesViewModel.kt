@@ -91,6 +91,8 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
 
     fun unknownSourcesIntent() = loveqApp.updates.unknownSourcesIntent()
 
+    fun openDownloads() = loveqApp.updates.openDownloads()
+
     val connection = PlayerConnection(app)
     val progressMap: StateFlow<Map<Long, Progress>> = store.progressMap
     val lastId: StateFlow<Long?> = store.lastId

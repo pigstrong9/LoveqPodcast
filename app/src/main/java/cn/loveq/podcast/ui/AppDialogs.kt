@@ -229,6 +229,7 @@ internal fun SettingsDialog(
     onInstallPending: () -> Unit,
     onOpenReleasePage: () -> Unit,
     onRequestUnknownSources: () -> android.content.Intent?,
+    onOpenDownloads: () -> android.content.Intent,
     onRemove: (Long) -> Unit,
     onRetry: (Long) -> Unit,
     onCleared: () -> Unit,
@@ -544,7 +545,8 @@ internal fun SettingsDialog(
                     onDownloadAndInstall = onDownloadAndInstall,
                     onInstallPending = onInstallPending,
                     onOpenReleasePage = onOpenReleasePage,
-                    onRequestUnknownSources = onRequestUnknownSources
+                    onRequestUnknownSources = onRequestUnknownSources,
+                    onOpenDownloads = onOpenDownloads
                 )
 
                 Spacer(Modifier.height(22.dp))

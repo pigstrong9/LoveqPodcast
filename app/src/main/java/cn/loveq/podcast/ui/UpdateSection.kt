@@ -1,6 +1,8 @@
 package cn.loveq.podcast.ui
 
+import android.content.Context
 import android.content.Intent
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -35,6 +37,18 @@ import cn.loveq.podcast.data.UpdateStatus
 import cn.loveq.podcast.ui.theme.AppColors
 import kotlin.math.roundToInt
 
+/**
+ * 安全跳转：车机定制系统里系统 Activity 缺失是常态，
+ * 跳不过去给个 toast 并返回 false，绝不让 ActivityNotFoundException 冒出去闪退。
+ */
+private fun startSafely(context: Context, intent: Intent): Boolean = try {
+    context.startActivity(intent)
+    true
+} catch (e: Exception) {
+    Toast.makeText(context, "无法打开该系统页面，请到文件管理器手动操作", Toast.LENGTH_SHORT).show()
+    false
+}
+
 /** 镜像前缀转成能看懂的名字：空串是直连，其余去掉协议与末尾斜杠 */
 private fun sourceLabel(prefix: String): String =
     if (prefix.isEmpty()) "直连"
@@ -65,7 +79,8 @@ internal fun UpdateSection(
     onDownloadAndInstall: () -> Unit,
     onInstallPending: () -> Unit,
     onOpenReleasePage: () -> Unit,
-    onRequestUnknownSources: () -> Intent?
+    onRequestUnknownSources: () -> Intent?,
+    onOpenDownloads: () -> Intent
 ) {
     val context = LocalContext.current
     val owner = LocalLifecycleOwner.current
@@ -170,6 +185,19 @@ internal fun UpdateSection(
                 }
             }
 
+            is UpdateStatus.ManualInstall -> {
+                Text(
+                    "已尝试唤起安装。若系统提示禁止安装，请在文件管理器的「下载」目录点击 " +
+                        "${status.fileName} 完成安装（这条路径已验证可用）。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = AppColors.Body
+                )
+                Spacer(Modifier.height(4.dp))
+                TextButton(onClick = { startSafely(context, onOpenDownloads()) }) {
+                    Text("打开下载目录", color = AppColors.Red, fontWeight = FontWeight.Bold)
+                }
+            }
+
             is UpdateStatus.Failed -> FailureText(status)
         }
 
@@ -182,7 +210,13 @@ internal fun UpdateSection(
 
                 status is UpdateStatus.Failed && status.kind == FailureKind.UNKNOWN_SOURCES ->
                     TextButton(onClick = {
-                        onRequestUnknownSources()?.let { context.startActivity(it) }
+                        // 定制车机上这个系统设置页可能根本不存在，跳不过去不能崩 ——
+                        // 之前这里裸调 startActivity，ActivityNotFoundException 直接闪退
+                        val intent = onRequestUnknownSources()
+                        if (intent == null || !startSafely(context, intent)) {
+                            // 跳不过去就退回公开降级：打开 Release 页让用户自己下
+                            onOpenReleasePage()
+                        }
                     }) {
                         Text("去授权「安装未知应用」", color = AppColors.Red, fontWeight = FontWeight.Bold)
                     }

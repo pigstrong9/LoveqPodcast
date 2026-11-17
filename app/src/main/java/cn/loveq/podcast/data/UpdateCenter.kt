@@ -32,6 +32,12 @@ sealed interface UpdateStatus {
      */
     data object Verifying : UpdateStatus
     data class ReadyToInstall(val file: File) : UpdateStatus
+
+    /**
+     * 车机兼容路径的兜底：包已经放进公共下载目录，让用户从文件管理器点安装。
+     * @param fileName 下载目录里的显示文件名，界面要原样告诉用户去找哪个
+     */
+    data class ManualInstall(val fileName: String) : UpdateStatus
     data class Failed(val kind: FailureKind, val detail: String?) : UpdateStatus
 }
 
@@ -144,18 +150,7 @@ internal class UpdateCenter(
                 }
 
                 pendingInstall = file
-                if (installer.needsUnknownSources()) {
-                    _status.value = UpdateStatus.Failed(FailureKind.UNKNOWN_SOURCES, null)
-                    return@launch
-                }
-                _status.value = UpdateStatus.ReadyToInstall(file)
-                // 唤安装器单独包一层：系统里没有安装器实现时这里会抛，
-                // 报成 DOWNLOAD 会让「下载失败」这个说法彻底误导人
-                try {
-                    installer.install(file)
-                } catch (e: Exception) {
-                    _status.value = UpdateStatus.Failed(FailureKind.INSTALL, e.message)
-                }
+                dispatchInstall(file)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -166,6 +161,63 @@ internal class UpdateCenter(
 
     /** 去系统设置授权的入口 */
     fun unknownSourcesIntent(): Intent? = installer.unknownSourcesIntent()
+
+    /** 打开系统下载目录（车机兼容路径的手动安装兜底） */
+    fun openDownloads(): Intent = installer.openDownloads()
+
+    /**
+     * 分发安装：按系统版本走两条路。
+     *
+     * 高版本（API 30+）：沿用原方案 —— 未授权就引导去系统设置，
+     *   原生「安装未知应用」流程是正常的。
+     * 低版本（API <=29，DiLink 4 这类车机）：不再跳那个可能不存在的设置页，
+     *   先直接唤起系统安装器（车机文件管理器点 APK 能装，说明安装器本身可用）；
+     *   万一唤起失败，降级为把包放进下载目录、让用户自己点。
+     */
+    private fun dispatchInstall(file: File) {
+        if (!installer.useCompatInstall()) {
+            if (installer.needsUnknownSources()) {
+                _status.value = UpdateStatus.Failed(FailureKind.UNKNOWN_SOURCES, null)
+                return
+            }
+            _status.value = UpdateStatus.ReadyToInstall(file)
+            // 高版本：系统安装器流程正常，唤起失败才报错
+            try {
+                installer.install(file)
+            } catch (e: Exception) {
+                _status.value = UpdateStatus.Failed(FailureKind.INSTALL, e.message)
+            }
+            return
+        }
+        // 车机：先把包放进下载目录备好手动安装这条路，再尝试直接唤起安装器。
+        // 不能只靠 install() 抛异常来判断失败 —— 车机上安装器 Activity 存在、
+        // 不抛异常，但会以「禁止安装未知来源」拒绝我们（文件管理器是系统应用才装得上）。
+        // 所以两条路同时给：装上了最好；被拒了用户回到应用仍有明确的手动入口。
+        val ready = prepareManualInstall(file)
+        try {
+            installer.install(file)
+        } catch (e: Exception) {
+            // 安装器都唤不起来，主动打开文件选择器帮用户走手动路径
+            if (ready) runCatching { appContext.startActivity(installer.openDownloads()) }
+        }
+    }
+
+    /**
+     * 把已校验的包放进公共下载目录，供用户从文件管理器点击安装。
+     * 返回是否成功；失败时给出明确状态，不让用户对着一个不存在的入口发懵。
+     */
+    private fun prepareManualInstall(file: File): Boolean {
+        val name = "LoveqPodcast-v${currentVersionName()}.apk"
+        val published = installer.publishToDownloads(file, name)
+        if (published == null) {
+            _status.value = UpdateStatus.Failed(
+                FailureKind.INSTALL, "无法把安装包放入下载目录，请在系统设置中允许本应用安装应用"
+            )
+            return false
+        }
+        _status.value = UpdateStatus.ManualInstall(published)
+        return true
+    }
 
     /**
      * 从系统设置回来后调用。
@@ -180,14 +232,8 @@ internal class UpdateCenter(
             _status.value = UpdateStatus.Idle
             return
         }
-        if (installer.needsUnknownSources()) return
-        _status.value = UpdateStatus.ReadyToInstall(file)
-        // 与 downloadAndInstall 同样的理由：从界面回调里抛出会崩溃
-        try {
-            installer.install(file)
-        } catch (e: Exception) {
-            _status.value = UpdateStatus.Failed(FailureKind.INSTALL, e.message)
-        }
+        if (!installer.useCompatInstall() && installer.needsUnknownSources()) return
+        dispatchInstall(file)
     }
 
     /** 兜底：全部源都失败时打开 Release 页面，让用户自己下 */
