@@ -84,6 +84,31 @@ class ProgressStore(context: Context) {
     }
 
     /**
+     * 启动时自动缓存「当前那期 → 最新」之间未缓存的节目。
+     *
+     * 默认关：一次可能排进 5 期（约 650MB），车机是按流量/存储过日子的，
+     * 必须由用户明确打开。具体下载哪些由 AutoDownloadCoordinator 决定。
+     */
+    private val _autoDownload = MutableStateFlow(prefs.getBoolean(KEY_AUTO_DOWNLOAD, false))
+    val autoDownload: StateFlow<Boolean> = _autoDownload
+
+    fun setAutoDownload(on: Boolean) {
+        _autoDownload.value = on
+        persist(prefs.edit().putBoolean(KEY_AUTO_DOWNLOAD, on))
+    }
+
+    /** 自动下载针对的分类 id，默认粤语节目（唯一有全库本地索引的分类） */
+    private val _autoDownloadCategory = MutableStateFlow(
+        prefs.getInt(KEY_AUTO_DOWNLOAD_CATEGORY, Category.CANTONESE_ID)
+    )
+    val autoDownloadCategory: StateFlow<Int> = _autoDownloadCategory
+
+    fun setAutoDownloadCategory(categoryId: Int) {
+        _autoDownloadCategory.value = categoryId
+        persist(prefs.edit().putInt(KEY_AUTO_DOWNLOAD_CATEGORY, categoryId))
+    }
+
+    /**
      * 跳过空白（片头/片尾各跳 N 分钟）。
      *
      * 默认关：跳首尾会切掉内容，必须用户明确打开。时长在设置页可调（2–5 分钟），
@@ -287,6 +312,8 @@ class ProgressStore(context: Context) {
         const val KEY_BOOST = "boost"
         const val KEY_IMMERSIVE = "immersive"
         const val KEY_AUTO_RESUME = "auto_resume"
+        const val KEY_AUTO_DOWNLOAD = "auto_download"
+        const val KEY_AUTO_DOWNLOAD_CATEGORY = "auto_download_category"
         const val KEY_SKIP_BLANK = "skip_blank"
         const val KEY_SKIP_BLANK_MINUTES = "skip_blank_minutes"
         const val KEY_VOCAL_BOOST = "vocal_boost"

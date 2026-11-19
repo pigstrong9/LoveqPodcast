@@ -18,6 +18,12 @@ data class Category(
             Category(2, "国语节目"),
             Category(0, "全部节目")
         )
+
+        /**
+         * 启动自动下载可选的节目类型。「全部节目」不是一种节目类型，而且自动下载
+         * 要判断「当前那期属不属于所选分类」，选全部会让这条判断永远成立，故排除。
+         */
+        val DOWNLOADABLE: List<Category> = ALL.filter { it.id != 0 }
     }
 }
 

@@ -1,6 +1,7 @@
 package cn.loveq.podcast
 
 import android.app.Application
+import cn.loveq.podcast.data.AutoDownloadCoordinator
 import cn.loveq.podcast.data.ApkInstaller
 import cn.loveq.podcast.data.CarNightMode
 import cn.loveq.podcast.data.DownloadManager
@@ -39,6 +40,8 @@ class LoveqApp : Application() {
         private set
     lateinit var downloads: DownloadManager
         private set
+    lateinit var autoDownload: AutoDownloadCoordinator
+        private set
     internal lateinit var updates: UpdateCenter
         private set
 
@@ -56,6 +59,7 @@ class LoveqApp : Application() {
         episodeCache = EpisodeCacheStore(this)
         queueStore = QueueStore(this)
         downloads = DownloadManager(this, repository)
+        autoDownload = AutoDownloadCoordinator(progressStore, indexStore, repository, downloads)
 
         // 夹具构建整个换掉 ReleaseSource，而不是给 GithubReleases 塞一个假基址：
         // 这样真实现里没有一行测试代码，release 里 R8 把这条分支连夹具类一起删掉

@@ -61,6 +61,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import cn.loveq.podcast.data.Category
 import cn.loveq.podcast.data.DownloadManager
 import cn.loveq.podcast.data.ThemeMode
 import cn.loveq.podcast.data.UpdateStatus
@@ -217,6 +218,12 @@ internal fun SettingsDialog(
     onImmersiveChange: (Boolean) -> Unit,
     autoResume: Boolean,
     onAutoResumeChange: (Boolean) -> Unit,
+    /** 启动时自动缓存「当前期 → 最新」之间未缓存的节目 */
+    autoDownload: Boolean,
+    onAutoDownloadChange: (Boolean) -> Unit,
+    /** 自动下载针对的分类 id */
+    autoDownloadCategoryId: Int,
+    onAutoDownloadCategoryChange: (Int) -> Unit,
     /** 跳过空白的片头/片尾时长（2–5 分钟）；开关本身在播放设置面板里 */
     skipBlankMinutes: Int,
     onSkipBlankMinutes: (Int) -> Unit,
@@ -232,6 +239,7 @@ internal fun SettingsDialog(
     onOpenDownloads: () -> android.content.Intent,
     onRemove: (Long) -> Unit,
     onRetry: (Long) -> Unit,
+    onClearUnfinished: () -> Unit,
     onCleared: () -> Unit,
     onClearEpisodeCache: () -> Unit,
     onDismiss: () -> Unit
@@ -239,21 +247,33 @@ internal fun SettingsDialog(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var clearing by remember { mutableStateOf(false) }
-    var aboutOpen by remember { mutableStateOf(false) }
+    // 首页 + 三个二级页。沿用原来「关于」的整页切换：不另开窗口，
+    // 返回键先回设置首页，在首页才关闭设置
+    // 车机旋转会重建 Activity，二级页状态必须能恢复，否则转个屏就被踢回首页
+    var page by rememberSaveable { mutableStateOf(SettingsPage.HOME) }
     // 上限由调用方传入：首次 get() 时按可用空间算定，拿不到时退回硬上限 2GB
     val cacheCap = formatSize(cacheCapBytes)
+    val cacheLabel = (cacheBytes?.let { formatSize(it) } ?: "统计中…") + " / $cacheCap"
+    // 未完成 = 排队中 / 下载中 / 失败；已下完的整集不动
+    val unfinished = downloads.count { it.state != DownloadManager.State.DONE }
+    // 四个二级页共用一条滚动状态，切页时归零，免得从一页底部进到另一页还停在底部
+    val scroll = rememberScrollState()
+    LaunchedEffect(page) { scroll.scrollTo(0) }
 
-    // 「关于」不是另开一个窗口，而是把设置页整页换成声明页：两栏和单栏都从设置进来，
-    // 这样不必给 Sidebar 和 PhoneHeader 各加一个入口，声明也只有一个来源
-    if (aboutOpen) {
-        AboutDialog(onBack = { aboutOpen = false })
-        return
+    BackHandler(onBack = {
+        if (page == SettingsPage.HOME) onDismiss() else page = SettingsPage.HOME
+    })
+
+    val title = when (page) {
+        SettingsPage.HOME -> "设置"
+        SettingsPage.DOWNLOADS -> "下载与缓存"
+        SettingsPage.UPDATE -> "更新"
+        SettingsPage.ABOUT -> "关于"
     }
 
     // 全屏设置页（小宇宙式）：不再是居中小弹窗，内容一屏摊开、自己滚动。
     // 作为普通覆盖层渲染在应用窗口里（不走 Dialog），天然铺满全屏，
     // 也绕开了 MIUI 对弹窗窗口「内容尺寸+居中」的摆放怪癖
-    BackHandler(onBack = onDismiss)
     Box(
         Modifier
             .fillMaxSize()
@@ -265,15 +285,22 @@ internal fun SettingsDialog(
                 .statusBarsPadding()
                 .navigationBarsPadding()
         ) {
-            // 顶栏：标题 + 关闭
+            // 顶栏：二级页多一颗「返回」，标题跟着当前页变
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .padding(start = 20.dp, end = 8.dp, top = 6.dp),
+                    .padding(start = 12.dp, end = 8.dp, top = 6.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                if (page != SettingsPage.HOME) {
+                    TextButton(onClick = { page = SettingsPage.HOME }) {
+                        Text("‹ 返回", color = AppColors.Red, fontWeight = FontWeight.Bold)
+                    }
+                } else {
+                    Spacer(Modifier.width(52.dp))
+                }
                 Text(
-                    "设置",
+                    title,
                     style = MaterialTheme.typography.titleLarge,
                     color = AppColors.Ink,
                     fontWeight = FontWeight.Bold,
@@ -290,296 +317,377 @@ internal fun SettingsDialog(
                     .align(Alignment.CenterHorizontally)
                     .widthIn(max = 680.dp)
                     .fillMaxWidth()
-                    .verticalScroll(rememberScrollState())
+                    .verticalScroll(scroll)
                     .padding(horizontal = 20.dp)
             ) {
-                // ---- 账号 ----
-                Text(
-                    "账号",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = AppColors.Muted
-                )
-                Spacer(Modifier.height(10.dp))
-                if (account != null) {
+                when (page) {
+                SettingsPage.HOME -> {
+                    // ---- 账号 ----
                     Text(
-                        "已登录：$account",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = AppColors.Ink
+                        "账号",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = AppColors.Muted
                     )
+                    Spacer(Modifier.height(10.dp))
+                    if (account != null) {
+                        Text(
+                            "已登录：$account",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = AppColors.Ink
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "登录态只用于官网要求登录的音频，平时浏览与收听不需要登录。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = AppColors.Muted
+                        )
+                        TextButton(onClick = onLogout) {
+                            Text("退出登录", color = AppColors.Muted)
+                        }
+                    } else {
+                        Text(
+                            "未登录",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = AppColors.Ink
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "平时无需登录，官网要求登录时会自动弹框；也可以在这里提前登录。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = AppColors.Muted
+                        )
+                        TextButton(onClick = onLogin) {
+                            Text("登录 LoveQ 账号", color = AppColors.Red, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                    Spacer(Modifier.height(22.dp))
+
+                    // ---- 显示 ----
+                    Text(
+                        "显示",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = AppColors.Muted
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Text("外观", style = MaterialTheme.typography.titleMedium, color = AppColors.Ink)
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "登录态只用于官网要求登录的音频，平时浏览与收听不需要登录。",
+                        "跟随手机/车机的日夜模式，或固定不变。",
                         style = MaterialTheme.typography.bodySmall,
                         color = AppColors.Muted
                     )
-                    TextButton(onClick = onLogout) {
-                        Text("退出登录", color = AppColors.Muted)
-                    }
-                } else {
-                    Text(
-                        "未登录",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = AppColors.Ink
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        "平时无需登录，官网要求登录时会自动弹框；也可以在这里提前登录。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = AppColors.Muted
-                    )
-                    TextButton(onClick = onLogin) {
-                        Text("登录 LoveQ 账号", color = AppColors.Red, fontWeight = FontWeight.Bold)
-                    }
-                }
-                Spacer(Modifier.height(22.dp))
-
-                // ---- 显示 ----
-                Text(
-                    "显示",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = AppColors.Muted
-                )
-                Spacer(Modifier.height(10.dp))
-                Text("外观", style = MaterialTheme.typography.titleMedium, color = AppColors.Ink)
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "跟随手机/车机的日夜模式，或固定不变。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = AppColors.Muted
-                )
-                Spacer(Modifier.height(10.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    ThemeModeChip(
-                        label = "跟随系统",
-                        selected = themeMode == ThemeMode.SYSTEM,
-                        onClick = { onThemeModeChange(ThemeMode.SYSTEM) }
-                    )
-                    ThemeModeChip(
-                        label = "浅色",
-                        selected = themeMode == ThemeMode.LIGHT,
-                        onClick = { onThemeModeChange(ThemeMode.LIGHT) }
-                    )
-                    ThemeModeChip(
-                        label = "深色",
-                        selected = themeMode == ThemeMode.DARK,
-                        onClick = { onThemeModeChange(ThemeMode.DARK) }
-                    )
-                }
-                Spacer(Modifier.height(18.dp))
-                SwitchRow(
-                    title = "隐藏顶部状态栏",
-                    subtitle = "车机建议开启，手机建议关闭。",
-                    checked = immersive,
-                    onChange = onImmersiveChange
-                )
-
-                Spacer(Modifier.height(22.dp))
-
-                // ---- 播放 ----
-                Text(
-                    "播放",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = AppColors.Muted
-                )
-                Spacer(Modifier.height(10.dp))
-                SwitchRow(
-                    title = "启动自动续播",
-                    subtitle = "打开应用自动接着上次那期播放。",
-                    checked = autoResume,
-                    onChange = onAutoResumeChange
-                )
-                Spacer(Modifier.height(14.dp))
-                Text("跳过空白时长", style = MaterialTheme.typography.titleMedium, color = AppColors.Ink)
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "每期自动跳过片头/片尾各 N 分钟，短的节目不跳；开关在播放设置面板。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = AppColors.Muted
-                )
-                Spacer(Modifier.height(10.dp))
-                // 四个按钮等宽分布：包裹内容的写法在窄弹窗里放不下时，
-                // 最后一个会被压缩换行（实测「5 分钟」变形成两行）
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    (SkipBlankDefaults.MIN_MINUTES..SkipBlankDefaults.MAX_MINUTES).forEach { minutes ->
+                    Spacer(Modifier.height(10.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         ThemeModeChip(
-                            label = "$minutes 分钟",
-                            selected = skipBlankMinutes == minutes,
-                            onClick = { onSkipBlankMinutes(minutes) },
-                            modifier = Modifier.weight(1f)
+                            label = "跟随系统",
+                            selected = themeMode == ThemeMode.SYSTEM,
+                            onClick = { onThemeModeChange(ThemeMode.SYSTEM) }
+                        )
+                        ThemeModeChip(
+                            label = "浅色",
+                            selected = themeMode == ThemeMode.LIGHT,
+                            onClick = { onThemeModeChange(ThemeMode.LIGHT) }
+                        )
+                        ThemeModeChip(
+                            label = "深色",
+                            selected = themeMode == ThemeMode.DARK,
+                            onClick = { onThemeModeChange(ThemeMode.DARK) }
                         )
                     }
-                }
+                    Spacer(Modifier.height(18.dp))
+                    SwitchRow(
+                        title = "隐藏顶部状态栏",
+                        subtitle = "车机建议开启，手机建议关闭。",
+                        checked = immersive,
+                        onChange = onImmersiveChange
+                    )
 
-                Spacer(Modifier.height(22.dp))
+                    Spacer(Modifier.height(22.dp))
 
-                // ---- 缓存 ----
-                Text(
-                    "收听缓存",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = AppColors.Muted
-                )
-                Spacer(Modifier.height(10.dp))
-                Text(
-                    "节目缓存：" + (cacheBytes?.let { formatSize(it) } ?: "统计中…") + " / $cacheCap",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = AppColors.Ink
-                )
-                Spacer(Modifier.height(10.dp))
-                Text(
-                    "重听、续播不耗流量；超限自动清理最久未听的。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = AppColors.Muted
-                )
-                if (downloads.isNotEmpty()) {
-                    Spacer(Modifier.height(16.dp))
+                    // ---- 播放 ----
                     Text(
-                        "离线缓存 ${downloads.size} 期 · 听完自动删除",
+                        "播放",
                         style = MaterialTheme.typography.titleSmall,
+                        color = AppColors.Muted
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    SwitchRow(
+                        title = "启动自动续播",
+                        subtitle = "打开应用自动接着上次那期播放。",
+                        checked = autoResume,
+                        onChange = onAutoResumeChange
+                    )
+                    Spacer(Modifier.height(14.dp))
+                    Text("跳过空白时长", style = MaterialTheme.typography.titleMedium, color = AppColors.Ink)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "每期自动跳过片头/片尾各 N 分钟，短的节目不跳；开关在播放设置面板。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = AppColors.Muted
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    // 四个按钮等宽分布：包裹内容的写法在窄弹窗里放不下时，
+                    // 最后一个会被压缩换行（实测「5 分钟」变形成两行）
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        (SkipBlankDefaults.MIN_MINUTES..SkipBlankDefaults.MAX_MINUTES).forEach { minutes ->
+                            ThemeModeChip(
+                                label = "$minutes 分钟",
+                                selected = skipBlankMinutes == minutes,
+                                onClick = { onSkipBlankMinutes(minutes) },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+
+                    Spacer(Modifier.height(26.dp))
+
+                    // ---- 二级入口 ----
+                    Text(
+                        "更多设置",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = AppColors.Muted
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    SettingsEntryRow(
+                        title = "下载与缓存",
+                        subtitle = "$cacheLabel · 离线 ${downloads.size} 期" +
+                            (if (autoDownload) " · 自动下载已开" else ""),
+                        onClick = { page = SettingsPage.DOWNLOADS }
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    SettingsEntryRow(
+                        title = "更新",
+                        subtitle = if (updateStatus is UpdateStatus.Available) {
+                            "发现新版本"
+                        } else {
+                            "检查新版本 / 查看当前版本"
+                        },
+                        dot = updateStatus is UpdateStatus.Available,
+                        onClick = { page = SettingsPage.UPDATE }
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    SettingsEntryRow(
+                        title = "关于",
+                        subtitle = "非官方声明与联系方式",
+                        onClick = { page = SettingsPage.ABOUT }
+                    )
+                    Spacer(Modifier.height(24.dp))
+                }
+                SettingsPage.DOWNLOADS -> {
+                    // ---- 缓存 ----
+                    Text(
+                        "收听缓存",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = AppColors.Muted
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        "节目缓存：" + (cacheBytes?.let { formatSize(it) } ?: "统计中…") + " / $cacheCap",
+                        style = MaterialTheme.typography.titleMedium,
                         color = AppColors.Ink
                     )
-                    downloads.forEach { entry ->
-                        Row(
-                            Modifier
-                                .fillMaxWidth()
-                                .padding(top = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        "重听、续播不耗流量；超限自动清理最久未听的。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = AppColors.Muted
+                    )
+
+                    Spacer(Modifier.height(18.dp))
+                    SwitchRow(
+                        title = "启动自动下载",
+                        subtitle = "每次启动从上次收听的那期开始，缓存所选分类中更新的未缓存节目（最多 5 期）。",
+                        checked = autoDownload,
+                        onChange = onAutoDownloadChange
+                    )
+                    if (autoDownload) {
+                        Spacer(Modifier.height(10.dp))
+                        Text(
+                            "自动下载分类",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = AppColors.Ink
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "只在正在收听的节目属于所选分类时才下载。粤语节目用本地索引，其余分类需联网定位。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = AppColors.Muted
+                        )
+                        Spacer(Modifier.height(10.dp))
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Column(Modifier.weight(1f)) {
-                                Text(
-                                    entry.episode.title.ifBlank { entry.episode.date },
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = AppColors.Ink,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
+                            Category.DOWNLOADABLE.forEach { category ->
+                                ThemeModeChip(
+                                    label = category.name,
+                                    selected = category.id == autoDownloadCategoryId,
+                                    onClick = { onAutoDownloadCategoryChange(category.id) }
                                 )
-                                Text(
-                                    entry.episode.date,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = AppColors.Muted
-                                )
-                            }
-                            Spacer(Modifier.width(10.dp))
-                            Text(
-                                when (entry.state) {
-                                    DownloadManager.State.DONE -> formatSize(entry.bytes)
-                                    DownloadManager.State.DOWNLOADING ->
-                                        "${(entry.progress * 100).roundToInt()}%"
-                                    DownloadManager.State.QUEUED -> "排队中"
-                                    DownloadManager.State.FAILED -> "失败"
-                                },
-                                style = MaterialTheme.typography.labelMedium,
-                                color = if (entry.state == DownloadManager.State.FAILED) {
-                                    AppColors.RedDeep
-                                } else {
-                                    AppColors.Muted
-                                }
-                            )
-                            // 失败不会自己重来：条目还占着列表，
-                            // 重新长按「缓存」又会被当成已存在而跳过，只能在这里重试
-                            if (entry.state == DownloadManager.State.FAILED) {
-                                TextButton(onClick = { onRetry(entry.episode.id) }) {
-                                    Text("重试", color = AppColors.RedDeep)
-                                }
-                            }
-                            TextButton(onClick = { onRemove(entry.episode.id) }) {
-                                Text("删除", color = AppColors.Muted)
                             }
                         }
                     }
-                }
-                Spacer(Modifier.height(14.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    // 清理是本页唯一的破坏性操作，不能放在对话框右下角那个
-                    // 「主按钮」位置：拨完开关顺手点右下角就会把缓存清空
-                    TextButton(
-                        onClick = {
-                            clearing = true
-                            scope.launch {
-                                withContext(Dispatchers.IO) {
-                                    MediaCache.clear(context)
-                                }
-                                clearing = false
-                                onCleared()
-                            }
-                        },
-                        enabled = !clearing && (cacheBytes ?: 0L) > 0
-                    ) {
+                    Spacer(Modifier.height(16.dp))
+
+                    if (downloads.isNotEmpty()) {
+                        Spacer(Modifier.height(16.dp))
                         Text(
-                            if (clearing) "清理中…" else "清理收听缓存",
-                            color = if (clearing || (cacheBytes ?: 0L) <= 0L) AppColors.Faint else AppColors.Red,
-                            fontWeight = FontWeight.Bold
+                            "离线缓存 ${downloads.size} 期 · 听完自动删除",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = AppColors.Ink
                         )
+                        if (unfinished > 0) {
+                            Spacer(Modifier.height(8.dp))
+                            TextButton(onClick = onClearUnfinished) {
+                                Text(
+                                    "一键清理未完成（$unfinished）",
+                                    color = AppColors.Red,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                        downloads.forEach { entry ->
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        entry.episode.title.ifBlank { entry.episode.date },
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = AppColors.Ink,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        entry.episode.date,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = AppColors.Muted
+                                    )
+                                }
+                                Spacer(Modifier.width(10.dp))
+                                Text(
+                                    when (entry.state) {
+                                        DownloadManager.State.DONE -> formatSize(entry.bytes)
+                                        DownloadManager.State.DOWNLOADING ->
+                                            "${(entry.progress * 100).roundToInt()}%"
+                                        DownloadManager.State.QUEUED -> "排队中"
+                                        DownloadManager.State.FAILED -> "失败"
+                                    },
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = if (entry.state == DownloadManager.State.FAILED) {
+                                        AppColors.RedDeep
+                                    } else {
+                                        AppColors.Muted
+                                    }
+                                )
+                                // 失败不会自己重来：条目还占着列表，
+                                // 重新长按「缓存」又会被当成已存在而跳过，只能在这里重试
+                                if (entry.state == DownloadManager.State.FAILED) {
+                                    TextButton(onClick = { onRetry(entry.episode.id) }) {
+                                        Text("重试", color = AppColors.RedDeep)
+                                    }
+                                }
+                                TextButton(onClick = { onRemove(entry.episode.id) }) {
+                                    Text("删除", color = AppColors.Muted)
+                                }
+                            }
+                        }
                     }
-                    if (clearing) {
-                        Spacer(Modifier.width(10.dp))
-                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.height(14.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        // 清理是本页唯一的破坏性操作，不能放在对话框右下角那个
+                        // 「主按钮」位置：拨完开关顺手点右下角就会把缓存清空
+                        TextButton(
+                            onClick = {
+                                clearing = true
+                                scope.launch {
+                                    withContext(Dispatchers.IO) {
+                                        MediaCache.clear(context)
+                                    }
+                                    clearing = false
+                                    onCleared()
+                                }
+                            },
+                            enabled = !clearing && (cacheBytes ?: 0L) > 0
+                        ) {
+                            Text(
+                                if (clearing) "清理中…" else "清理收听缓存",
+                                color = if (clearing || (cacheBytes ?: 0L) <= 0L) AppColors.Faint else AppColors.Red,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        if (clearing) {
+                            Spacer(Modifier.width(10.dp))
+                            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        }
                     }
-                }
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    "浏览过的历史月份本地留存，重选不联网。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = AppColors.Muted
-                )
-                TextButton(onClick = onClearEpisodeCache) {
+                    Spacer(Modifier.height(6.dp))
                     Text(
-                        "清理节目列表缓存",
-                        color = AppColors.Red,
-                        fontWeight = FontWeight.Bold
+                        "浏览过的历史月份本地留存，重选不联网。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = AppColors.Muted
                     )
-                }
-
-                Spacer(Modifier.height(22.dp))
-
-                // ---- 更新 ----
-                Text(
-                    "更新",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = AppColors.Muted
-                )
-                Spacer(Modifier.height(10.dp))
-                UpdateSection(
-                    status = updateStatus,
-                    currentVersion = currentVersion,
-                    onCheck = onCheckUpdate,
-                    onDownloadAndInstall = onDownloadAndInstall,
-                    onInstallPending = onInstallPending,
-                    onOpenReleasePage = onOpenReleasePage,
-                    onRequestUnknownSources = onRequestUnknownSources,
-                    onOpenDownloads = onOpenDownloads
-                )
-
-                Spacer(Modifier.height(22.dp))
-
-                // ---- 关于 ----
-                Text(
-                    "关于",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = AppColors.Muted
-                )
-                Spacer(Modifier.height(10.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(onClick = { aboutOpen = true }) {
+                    TextButton(onClick = onClearEpisodeCache) {
                         Text(
-                            "非官方声明与联系方式",
+                            "清理节目列表缓存",
                             color = AppColors.Red,
                             fontWeight = FontWeight.Bold
                         )
                     }
-                    if (updateStatus is UpdateStatus.Available) {
-                        Spacer(Modifier.width(6.dp))
-                        UpdateDot()
-                        Spacer(Modifier.width(6.dp))
-                        Text(
-                            "可更新",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = AppColors.RedDeep
-                        )
-                    }
+                }
+                SettingsPage.UPDATE -> {
+                    UpdateSection(
+                        status = updateStatus,
+                        currentVersion = currentVersion,
+                        onCheck = onCheckUpdate,
+                        onDownloadAndInstall = onDownloadAndInstall,
+                        onInstallPending = onInstallPending,
+                        onOpenReleasePage = onOpenReleasePage,
+                        onRequestUnknownSources = onRequestUnknownSources,
+                        onOpenDownloads = onOpenDownloads
+                    )
+                }
+                SettingsPage.ABOUT -> {
+                    AboutContent()
+                }
                 }
                 Spacer(Modifier.height(24.dp))
             }
         }
+    }
+}
+
+/** 设置页的层级：首页 + 三个二级页 */
+private enum class SettingsPage { HOME, DOWNLOADS, UPDATE, ABOUT }
+
+/** 设置首页的二级入口：标题 + 当前状态摘要，整行可点（车机上比小箭头好按） */
+@Composable
+private fun SettingsEntryRow(
+    title: String,
+    subtitle: String,
+    dot: Boolean = false,
+    onClick: () -> Unit
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(AppColors.Card)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.titleMedium, color = AppColors.Ink)
+            Spacer(Modifier.height(4.dp))
+            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = AppColors.Muted)
+        }
+        Spacer(Modifier.width(10.dp))
+        if (dot) UpdateDot()
+        Text("›", style = MaterialTheme.typography.titleLarge, color = AppColors.Muted)
     }
 }
 
@@ -590,7 +698,7 @@ internal fun SettingsDialog(
  * 所以必须让用户在 App 里就看得见。只写在 README 里，对装了 APK 的人等于没声明。
  */
 @Composable
-private fun AboutDialog(onBack: () -> Unit) {
+private fun AboutContent() {
     val context = LocalContext.current
     val version = remember {
         runCatching {
@@ -598,57 +706,44 @@ private fun AboutDialog(onBack: () -> Unit) {
         }.getOrNull().orEmpty()
     }
 
-    DialogHost(
-        onDismiss = onBack,
-        title = "关于",
-        text = {
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .verticalScroll(rememberScrollState())
-            ) {
-                Text(
-                    if (version.isBlank()) "LoveqPodcast" else "LoveqPodcast  v$version",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = AppColors.Ink,
-                    fontWeight = FontWeight.Bold
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "《一些事一些情》第三方播客客户端",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = AppColors.Muted
-                )
+    Column(Modifier.fillMaxWidth()) {
+        Text(
+            if (version.isBlank()) "LoveqPodcast" else "LoveqPodcast  v$version",
+            style = MaterialTheme.typography.titleMedium,
+            color = AppColors.Ink,
+            fontWeight = FontWeight.Bold
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "《一些事一些情》第三方播客客户端",
+            style = MaterialTheme.typography.bodySmall,
+            color = AppColors.Muted
+        )
 
-                Spacer(Modifier.height(18.dp))
+        Spacer(Modifier.height(18.dp))
 
-                // 可选中有两个原因：里面的仓库地址要能长按复制（车机上没法手打），
-                // 也免得日后有人截图时说"看不清写的是什么"
-                SelectionContainer {
-                    Column {
-                        Text(
-                            "本应用是非官方第三方客户端，与 LoveQ 官网及《一些事一些情》节目方" +
-                                "无任何隶属关系。节目内容版权归原作者所有。本应用不存储、不分发" +
-                                "任何音频，仅代为访问官网公开链接。非商业用途。",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = AppColors.Body
-                        )
-                        Spacer(Modifier.height(12.dp))
-                        Text(
-                            "如权利人认为不妥，可在项目仓库提 Issue 联系" +
-                                "（github.com/pigstrong9/LoveqPodcast/issues），" +
-                                "我将立即停止分发并下架。",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = AppColors.Body
-                        )
-                    }
-                }
+        // 可选中有两个原因：里面的仓库地址要能长按复制（车机上没法手打），
+        // 也免得日后有人截图时说"看不清写的是什么"
+        SelectionContainer {
+            Column {
+                Text(
+                    "本应用是非官方第三方客户端，与 LoveQ 官网及《一些事一些情》节目方" +
+                        "无任何隶属关系。节目内容版权归原作者所有。本应用不存储、不分发" +
+                        "任何音频，仅代为访问官网公开链接。非商业用途。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = AppColors.Body
+                )
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    "如权利人认为不妥，可在项目仓库提 Issue 联系" +
+                        "（github.com/pigstrong9/LoveqPodcast/issues），" +
+                        "我将立即停止分发并下架。",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = AppColors.Body
+                )
             }
-        },
-        confirmText = "返回",
-        onConfirm = onBack,
-        dismissText = null
-    )
+        }
+    }
 }
 
 /** 外观三档选择：胶囊样式与日期选择一致；modifier 传入 weight(1f) 可做等宽分布 */

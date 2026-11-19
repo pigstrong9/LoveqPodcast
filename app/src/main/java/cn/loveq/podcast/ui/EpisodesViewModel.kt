@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import cn.loveq.podcast.LoveqApp
+import cn.loveq.podcast.data.AutoDownloadCoordinator
 import cn.loveq.podcast.data.Category
 import cn.loveq.podcast.data.Episode
 import cn.loveq.podcast.data.EpisodeCacheStore
@@ -159,6 +160,16 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setAutoResume(on: Boolean) = store.setAutoResume(on)
 
+    /** 启动时是否自动缓存「当前期 → 最新」之间未缓存的节目 */
+    val autoDownload: StateFlow<Boolean> = store.autoDownload
+
+    fun setAutoDownload(on: Boolean) = store.setAutoDownload(on)
+
+    /** 自动下载针对的分类 id */
+    val autoDownloadCategory: StateFlow<Int> = store.autoDownloadCategory
+
+    fun setAutoDownloadCategory(id: Int) = store.setAutoDownloadCategory(id)
+
     /** 外观模式：跟随系统 / 浅色 / 深色 */
     val themeMode: StateFlow<ThemeMode> = store.themeMode
 
@@ -208,6 +219,7 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
         loadInitial()
         restoreListPosition()
         autoResumeOnLaunch()
+        autoDownloadOnLaunch()
     }
 
     /**
@@ -244,6 +256,16 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
     private fun autoResumeOnLaunch() {
         if (!shouldAutoResume(store.autoResume.value, store.lastId.value?.let(store::get))) return
         connection.resumeOnLaunch { resumeLast() }
+    }
+
+    /**
+     * 启动自动缓存（设置里可关，默认关）。
+     *
+     * 只在 ViewModel 构造时决定这一次，转屏/切后台回来不重放；决策与排队全在
+     * [AutoDownloadCoordinator] 里，界面只负责触发。
+     */
+    private fun autoDownloadOnLaunch() {
+        viewModelScope.launch { loveqApp.autoDownload.run() }
     }
 
     fun switchCategory(category: Category) {
@@ -1001,6 +1023,15 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 缓存失败的期重新排队（条目仍在列表里，不重试就再也不会自己开始） */
     fun retryOffline(episodeId: Long) = loveqApp.downloads.retry(episodeId)
+
+    /** 一键清理排队中 / 下载中 / 失败的缓存任务，保留已下完的 */
+    fun clearUnfinishedOffline() {
+        viewModelScope.launch {
+            // 批量删文件 + fsync 落盘，别堵在 Compose 点击所在的主线程上
+            val n = withContext(Dispatchers.IO) { loveqApp.downloads.clearUnfinished() }
+            if (n > 0) PlaybackEvents.report("已清理 $n 个未完成的缓存任务")
+        }
+    }
 
     fun togglePlayPause() = connection.togglePlayPause()
     fun seekTo(positionMs: Long) = connection.seekTo(positionMs)

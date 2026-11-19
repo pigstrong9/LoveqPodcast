@@ -111,6 +111,8 @@ fun AppScreen(
     val metaDate by viewModel.nowDate.collectAsStateWithLifecycle()
     val immersive by viewModel.immersive.collectAsStateWithLifecycle()
     val autoResume by viewModel.autoResume.collectAsStateWithLifecycle()
+    val autoDownload by viewModel.autoDownload.collectAsStateWithLifecycle()
+    val autoDownloadCategory by viewModel.autoDownloadCategory.collectAsStateWithLifecycle()
     val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
     val updateStatus by viewModel.updateStatus.collectAsStateWithLifecycle()
     val account by viewModel.account.collectAsStateWithLifecycle()
@@ -579,6 +581,10 @@ fun AppScreen(
             onImmersiveChange = viewModel::setImmersive,
             autoResume = autoResume,
             onAutoResumeChange = viewModel::setAutoResume,
+            autoDownload = autoDownload,
+            onAutoDownloadChange = viewModel::setAutoDownload,
+            autoDownloadCategoryId = autoDownloadCategory,
+            onAutoDownloadCategoryChange = viewModel::setAutoDownloadCategory,
             skipBlankMinutes = skipBlankMinutes,
             onSkipBlankMinutes = viewModel::setSkipBlankMinutes,
             themeMode = themeMode,
@@ -593,6 +599,7 @@ fun AppScreen(
             onOpenDownloads = viewModel::openDownloads,
             onRemove = viewModel::removeOffline,
             onRetry = viewModel::retryOffline,
+            onClearUnfinished = viewModel::clearUnfinishedOffline,
             onCleared = { cacheTick++ },
             onClearEpisodeCache = viewModel::clearEpisodeCache,
             onDismiss = { settingsOpen = false }

@@ -130,6 +130,36 @@ class DownloadManager(context: Context, private val repository: LoveqRepository)
         pump()
     }
 
+    /**
+     * 一键清掉所有未完成的下载任务（排队中 / 下载中 / 失败），保留已下完的。
+     *
+     * 要在锁里先掐掉流水线再改列表：否则被取消的协程收尾时会把「下载中」又写回 FAILED，
+     * 清完又冒出来。文件按 id 一起删（含 .part），免得取消瞬间的半成品永远占着存储。
+     *
+     * @return 清掉的任务数，给界面回显用
+     */
+    fun clearUnfinished(): Int {
+        val removed = synchronized(stateLock) {
+            val pending = _downloads.value.filter { it.state != State.DONE }
+            if (pending.isEmpty()) {
+                emptyList<Long>()
+            } else {
+                val ids = pending.map { it.episode.id }
+                if (currentEpisodeId in ids) stopPipelineLocked()
+                _downloads.value = _downloads.value.filter { it.state == State.DONE }
+                ids
+            }
+        }
+        if (removed.isEmpty()) return 0
+        removed.forEach { id ->
+            File(dir, "$id.mp3").delete()
+            File(dir, "$id.mp3.part").delete()
+        }
+        persist()
+        pump()
+        return removed.size
+    }
+
     @Volatile
     private var currentEpisodeId: Long = -1L
 
