@@ -9,12 +9,15 @@ import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
@@ -33,7 +36,11 @@ import java.io.IOException
  *
  * 一次只跑一个下载：车机是 4G/热点，并发抢带宽只会让每一期都下得更慢。
  */
-class DownloadManager(context: Context, private val repository: LoveqRepository) {
+class DownloadManager(
+    context: Context,
+    private val repository: LoveqRepository,
+    private val guard: RateLimitGuard
+) {
 
     private val appContext = context.applicationContext
     private val dir = File(appContext.filesDir, "offline").apply { mkdirs() }
@@ -50,6 +57,19 @@ class DownloadManager(context: Context, private val repository: LoveqRepository)
     val downloads: StateFlow<List<Entry>> = _downloads
 
     /**
+     * 清单是否已从磁盘读完。启动自动下载必须等这个为 true 再算「已缓存」——
+     * 否则读到的是空表，会把已下的期当成未缓存重新排队，还会被随后的 [load] 覆盖。
+     */
+    private val _loaded = MutableStateFlow(false)
+    val loaded: StateFlow<Boolean> = _loaded
+
+    /** 供编排方等待清单就绪，超时返回 false（调用方自行决定是否照常继续） */
+    suspend fun awaitLoaded(timeoutMs: Long): Boolean = withTimeoutOrNull(timeoutMs) {
+        _loaded.first { it }
+        true
+    } ?: false
+
+    /**
      * 队列状态（[_downloads]）会被两边同时改：UI 线程排队/删除，下载线程回写进度。
      * 所有「读出来算一遍再写回」的地方都必须在这把锁里，否则后写的会整片覆盖前者的结果
      * ——表现为选了三期只排进去两期。纯替换用的 [updateEntry] 走 StateFlow 的 CAS，无需加锁。
@@ -57,6 +77,9 @@ class DownloadManager(context: Context, private val repository: LoveqRepository)
     private val stateLock = Any()
 
     private var worker: Job? = null
+
+    /** 限流后的定时重试任务：到点重新 pump；删除/清理/新任务入队时取消重排 */
+    private var retryJob: Job? = null
 
     /**
      * 流水线代号：取消/删除会掐掉当前流水线并重启一条新的。
@@ -85,11 +108,12 @@ class DownloadManager(context: Context, private val repository: LoveqRepository)
         return if (f.length() > 0) f else null
     }
 
-    fun enqueue(episodes: List<Episode>) {
+    /** @return 实际入队数（调用方据此播报，避免把已缓存的期也算进去报多） */
+    fun enqueue(episodes: List<Episode>): Int {
         val pending = episodes.filter { e ->
             _downloads.value.none { it.episode.id == e.id } && localFile(e.id) == null
         }
-        if (pending.isEmpty()) return
+        if (pending.isEmpty()) return 0
         // 一期约 126MB（128kbps 两小时），车机存储不大；空间不够就明确拒绝，
         // 不能下到一半把设备塞满
         val need = pending.size * ESTIMATED_BYTES
@@ -99,12 +123,13 @@ class DownloadManager(context: Context, private val repository: LoveqRepository)
                 "空间不足：缓存 ${pending.size} 期约需 ${need / MB} MB，" +
                     "当前仅剩 ${free / MB} MB"
             )
-            return
+            return 0
         }
         // CAS 追加：下载线程正在回写进度时也不能把刚排进来的期覆盖掉
         _downloads.update { list -> list + pending.map { Entry(it, State.QUEUED, 0, 0) } }
         persist()
         pump()
+        return pending.size
     }
 
     /** 失败重试：FAILED 条目还留在列表里，不重置状态的话重新「缓存」会被当成已存在而跳过 */
@@ -167,6 +192,9 @@ class DownloadManager(context: Context, private val repository: LoveqRepository)
     private fun pump() {
         synchronized(stateLock) {
             if (worker?.isActive == true) return
+            // 有活要干了就撤掉旧的定时重试：用户新加了任务，或冷却已到点自行 pump
+            retryJob?.cancel()
+            retryJob = null
             val pipeline = ++pipelineId
             worker = scope.launch { drain(pipeline) }
         }
@@ -177,16 +205,57 @@ class DownloadManager(context: Context, private val repository: LoveqRepository)
         pipelineId++
         worker?.cancel()
         worker = null
+        retryJob?.cancel()
+        retryJob = null
     }
 
     /**
-     * 串行推进整条队列：一期下完立刻接下一期，直到没有排队项。
+     * 限流后安排自动重试：等官网冷却结束再 pump，任务全程留在 QUEUED 里。
+     *
+     * 不在这条流水线里空等——一是 30 分钟起步的 delay 会让队列看着卡死，二是进程随时可能
+     * 被系统杀掉；留在队列 + 持久化 manifest 保证下次启动也能接着下。单段等待上限
+     * [MAX_RETRY_WAIT_MS]：官网 6 小时冷却裁成 30 分钟一段，到点 pump 一次、被 guard
+     * 拦下就再等一段，不挂 6 小时协程（冷却期不发请求，不会升档）。
+     * 冷却已过（wait<=0）时由 drain 交还推进权后立刻重排，避免队列卡死。
+     * 新任务入队/删除/清理都会取消旧的重排，避免重复排队。
+     */
+    private fun scheduleRateRetry() {
+        synchronized(stateLock) {
+            retryJob?.cancel()
+            if (!_downloads.value.any { it.state == State.QUEUED }) return
+            val wait = retryDelayMs(guard.blockedForMs(), MAX_RETRY_WAIT_MS)
+            if (wait <= 0L) {
+                // 冷却已过（或等待被夹到 0）：条目已回 QUEUED，需要立刻重排。
+                // 注意本方法由 download() 在 worker 协程内调用，此刻 worker 仍 isActive，
+                // 直接 pump() 会被守卫挡掉。真正的重排交给即将退出的 drain()：它在锁内
+                // 先把 worker 置空，再调本方法，pump 才能起新流水线。
+                retryJob = scope.launch {
+                    currentCoroutineContext().ensureActive()
+                    pump()
+                }
+                return
+            }
+            retryJob = scope.launch {
+                delay(wait)
+                currentCoroutineContext().ensureActive()
+                pump()
+            }
+        }
+    }
+
+    /**
+     * 串行推进整条队列：一期下完、隔一会儿再接下一期，直到没有排队项。
      *
      * 写成循环而不是「下完一期后再 pump() 一次」——download() 就跑在 worker 自己的协程里，
      * 从它内部调 pump() 时 worker 仍然 isActive，pump 的守卫会直接返回，
      * 于是批量下载只下第一期，后面排队的永远不动（要等下次删除/重启才偶然接上下一期）。
+     *
+     * 相邻两期之间留 [EPISODE_GAP_MS]：官网对 program_download 的取链有频率限制，
+     * 连着取几期会触发限流，后面几期全失败；单期间隔重试则能下。首期不等（用户点了就立刻动），
+     * 从第二期起才等。delay 在流水线被取消时会抛 CancellationException，正好随删除/清理一起停下。
      */
     private suspend fun drain(pipeline: Long) {
+        var downloadedThisPipeline = false
         while (true) {
             currentCoroutineContext().ensureActive()
             val next = claimNext(pipeline)
@@ -197,7 +266,22 @@ class DownloadManager(context: Context, private val repository: LoveqRepository)
                 if (retireIfIdle(pipeline)) return
                 continue
             }
-            download(next, pipeline)
+            if (downloadedThisPipeline) delay(EPISODE_GAP_MS)
+            val canContinue = download(next, pipeline)
+            if (!canContinue) {
+                // 限流收手：download 已把条目重置回 QUEUED。必须在交还推进权之后
+                // 再安排重试——否则 worker 仍 isActive，pump 会被守卫挡掉，队列卡死。
+                val stillCurrent = synchronized(stateLock) {
+                    if (pipeline == pipelineId) {
+                        worker = null
+                        true
+                    } else false
+                }
+                // 已被删除/清理/新入队抢走推进权时，新流水线会自己 pump，不要重复重排
+                if (stillCurrent) scheduleRateRetry()
+                return
+            }
+            downloadedThisPipeline = true
         }
     }
 
@@ -223,7 +307,8 @@ class DownloadManager(context: Context, private val repository: LoveqRepository)
         next.episode
     }
 
-    private suspend fun download(episode: Episode, pipeline: Long) {
+    /** @return false 表示撞上官网限流，流水线应立刻收手（余数交给定时重试） */
+    private suspend fun download(episode: Episode, pipeline: Long): Boolean {
         val target = File(dir, "${episode.id}.mp3")
         val part = File(dir, "${episode.id}.mp3.part")
         try {
@@ -271,13 +356,25 @@ class DownloadManager(context: Context, private val repository: LoveqRepository)
                 _downloads.update { list -> list.filterNot { it.episode.id == episode.id } }
                 throw e
             }
+            if (e is RateLimitedException) {
+                // 限流不是永久失败：留在队列里，等官网冷却结束自动重试（或下次启动续下）。
+                // 绝不能标 FAILED 后还让流水线接着下——那是对着已经拒绝我们的官网继续敲门，
+                // 只会把冷却档位越升越高（30min → 6h）。
+                updateEntry(episode.id) { it.copy(state = State.QUEUED, bytes = 0, totalBytes = 0) }
+                val wait = guard.describeRemaining()
+                PlaybackEvents.report(
+                    if (wait.isEmpty()) "《${episode.date}》离线缓存稍后自动重试"
+                    else "官网暂时限制了访问，《${episode.date}》约 ${wait}后自动重试"
+                )
+                // 重排由 drain 在交还推进权（worker 置空）后统一调用 scheduleRateRetry，
+                // 这里若直接调会被「worker 仍 isActive」的守卫挡掉，队列从此没人接手。
+                return false
+            }
             updateEntry(episode.id) { it.copy(state = State.FAILED) }
-            // 被限流、登录墙和普通失败要分开说：前两者点重试没用，得等冷却或先登录
+            // 登录墙和普通失败要分开说：前者得先登录，后者可点重试
             PlaybackEvents.report(
-                when {
-                    e is RateLimitedException ->
-                        "《${episode.date}》离线缓存失败：官网暂时限制了访问，请稍后再试"
-                    e is LoginRequiredException -> {
+                when (e) {
+                    is LoginRequiredException -> {
                         AuthEvents.requestLogin(
                             AuthEvents.Retry.DOWNLOAD,
                             episode.id
@@ -294,6 +391,7 @@ class DownloadManager(context: Context, private val repository: LoveqRepository)
                 if (pipeline == pipelineId) currentEpisodeId = -1L
             }
         }
+        return true
     }
 
     private fun updateEntry(id: Long, transform: (Entry) -> Entry) {
@@ -329,36 +427,38 @@ class DownloadManager(context: Context, private val repository: LoveqRepository)
     }
 
     private fun load() {
-        val list = try {
-            if (!manifest.exists()) emptyList() else {
-                val arr = JSONArray(manifest.readText())
-                buildList {
-                    for (i in 0 until arr.length()) {
-                        // 单条坏数据只跳过，别让整张下载表作废
-                        val o = arr.optJSONObject(i) ?: continue
-                        val id = o.optLong("id")
-                        if (id <= 0) continue
-                        val state = runCatching { State.valueOf(o.optString("state")) }
-                            .getOrDefault(State.QUEUED)
-                        add(
-                            Entry(
-                                episode = Episode(id, o.optString("date"), o.optString("title")),
-                                // 上次进程被杀时正在下的，重启后重新排队
-                                state = if (state == State.DOWNLOADING) State.QUEUED else state,
-                                bytes = 0,
-                                totalBytes = o.optLong("totalBytes")
+        try {
+            val list = try {
+                if (!manifest.exists()) emptyList() else {
+                    val arr = JSONArray(manifest.readText())
+                    buildList {
+                        for (i in 0 until arr.length()) {
+                            // 单条坏数据只跳过，别让整张下载表作废
+                            val o = arr.optJSONObject(i) ?: continue
+                            val id = o.optLong("id")
+                            if (id <= 0) continue
+                            val state = runCatching { State.valueOf(o.optString("state")) }
+                                .getOrDefault(State.QUEUED)
+                            add(
+                                Entry(
+                                    episode = Episode(id, o.optString("date"), o.optString("title")),
+                                    // 上次进程被杀时正在下的，重启后重新排队
+                                    state = if (state == State.DOWNLOADING) State.QUEUED else state,
+                                    bytes = 0,
+                                    totalBytes = o.optLong("totalBytes")
+                                )
                             )
-                        )
+                        }
                     }
                 }
+            } catch (_: Exception) {
+                emptyList()
             }
-        } catch (_: Exception) {
-            emptyList()
-        }
-        // 磁盘上有完整文件的直接标 DONE（不重下）；清单说下完了但文件已不在的，重新排队
-        synchronized(stateLock) {
-            _downloads.value = list.map { entry ->
-                File(dir, "${entry.episode.id}.mp3.part").delete()
+            // 磁盘上有完整文件的直接标 DONE（不重下）；清单说下完了但文件已不在的，重新排队。
+            // 注意这里不删 .part：本方法读盘可能慢于启动自动下载的 2 秒延时，同一期可能
+            // 已经被内存入队甚至开下，删它的 .part 会砍掉 worker 正在写的文件，收尾
+            // renameTo 失败→该期误标 FAILED。清理推迟到下面的锁内，只针对磁盘独有的条目。
+            val restored = list.map { entry ->
                 val f = localFile(entry.episode.id)
                 when {
                     f != null -> entry.copy(state = State.DONE, bytes = f.length(), totalBytes = f.length())
@@ -366,16 +466,82 @@ class DownloadManager(context: Context, private val repository: LoveqRepository)
                     else -> entry
                 }
             }
+            synchronized(stateLock) {
+                val live = _downloads.value
+                // 只补磁盘里有、内存里还没有的条目。绝不能整片覆盖：
+                // 启动早期（本方法还在读盘时）自动下载/手动缓存可能已经入队甚至开下，
+                // 整片覆盖会把这些新条目全部抹掉，表现就是「批量下载只下到一期」。
+                // 内存里的状态永远比磁盘新，以它为准。
+                // .part 清理与合并必须同一把锁：只对磁盘独有的条目动手，内存里已有同 id 的
+                // 说明 worker 可能正写着它的 .part，绝不能删。
+                partIdsToCleanOnRestore(live, restored).forEach { id ->
+                    File(dir, "$id.mp3.part").delete()
+                }
+                _downloads.value = mergeRestoredEntries(live, restored)
+            }
+            persist()
+            pump()
+        } finally {
+            // 无论读盘成功与否都要通知等待方，否则 awaitLoaded 会白等到超时
+            _loaded.value = true
         }
-        persist()
-        pump()
     }
 
     companion object {
         private const val PROGRESS_STEP = 256L * 1024
         private const val MB = 1024L * 1024
 
+        /** 相邻两期之间的下载间隔：避开官网对 program_download 取链的频率限制 */
+        private const val EPISODE_GAP_MS = 8_000L
+
+        /**
+         * 限流后每段自动重试的最长等待：官网冷却可能长达 6 小时，直接挂一个 6 小时协程
+         * 既易被系统杀掉也不必。裁成 30 分钟一段，到点 pump 一次、被 guard 拦下就再等一段
+         * （冷却期不发请求，不会升档）；删任务/清队列/新入队都会取消这段等待。
+         */
+        private const val MAX_RETRY_WAIT_MS = 30L * 60 * 1000
+
         /** 一期约两小时、128kbps，估算 126MB，用于下载前的空间预检 */
         private const val ESTIMATED_BYTES = 130L * MB
     }
 }
+
+/**
+ * 磁盘恢复的条目并入内存现有队列，按 episode id 去重、内存优先。
+ *
+ * [live] 是启动早期内存里已有的条目（自动下载/手动缓存刚入队甚至开下的），状态最新；
+ * [restored] 是从 manifest 读回的。id 冲突时保留 [live]，只用 [restored] 补内存里没有的。
+ * 纯函数，便于 JVM 单测钉死「读盘不能冲掉并发入队的条目」这条竞态。
+ */
+internal fun mergeRestoredEntries(
+    live: List<DownloadManager.Entry>,
+    restored: List<DownloadManager.Entry>
+): List<DownloadManager.Entry> {
+    val liveIds = live.mapTo(HashSet()) { it.episode.id }
+    return live + restored.filterNot { it.episode.id in liveIds }
+}
+
+/**
+ * 读盘恢复时允许清理 .part 残留的 id：仅磁盘独有、内存里没有的条目。
+ *
+ * 内存里已有同 id 的，说明启动早期已入队甚至已开下，worker 可能正在写它的 .part；
+ * 这时删文件会让收尾 renameTo 失败，把刚保住的并发入队条目误标成 FAILED。
+ * 与 [mergeRestoredEntries] 共用同一套 id 判定，避免「合并保住了、part 却被删了」的错位。
+ * 纯函数，便于 JVM 单测钉死这条竞态。
+ */
+internal fun partIdsToCleanOnRestore(
+    live: List<DownloadManager.Entry>,
+    restored: List<DownloadManager.Entry>
+): List<Long> {
+    val liveIds = live.mapTo(HashSet()) { it.episode.id }
+    return restored.map { it.episode.id }.distinct().filterNot { it in liveIds }
+}
+
+/**
+ * 限流自动重试的单段等待时长：取官网剩余冷却，但夹在 [0, maxWait] 内。
+ *
+ * 纯函数便于 JVM 单测钉死两件事：冷却已过时不白等（返回 0，调用方立刻重排）；
+ * 官网冷却 6 小时也只等一段 maxWait（到点再检查，不挂 6 小时协程）。
+ */
+internal fun retryDelayMs(remainingCooldownMs: Long, maxWaitMs: Long): Long =
+    remainingCooldownMs.coerceIn(0L, maxWaitMs)

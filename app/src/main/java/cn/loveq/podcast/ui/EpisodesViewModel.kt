@@ -215,11 +215,21 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
     private var loadGen = 0
 
     init {
-        loveqApp.indexStore.ensureIndex(repo)
+        // 索引平时零请求（respectTtl=true，24 小时内不重抓）。但自动缓存要靠索引判断
+        // 「当前期 → 最新」有没有新集，索引停在昨天就会漏掉今天新发的节目。
+        // 所以只有开了自动缓存才强制做一次增量刷新；没开的行为完全不变。
+        // refresh 返回强制刷新代数基线：自动缓存据此等「本次强制刷新」落地。
+        // 不能用通用 advanceEpoch——启动时的惰性刷新也会推进它，却抓不到新节目。
+        val epochBeforeRefresh = if (store.autoDownload.value) {
+            loveqApp.indexStore.refresh(repo)
+        } else {
+            loveqApp.indexStore.ensureIndex(repo)
+            null
+        }
         loadInitial()
         restoreListPosition()
         autoResumeOnLaunch()
-        autoDownloadOnLaunch()
+        autoDownloadOnLaunch(epochBeforeRefresh)
     }
 
     /**
@@ -264,8 +274,8 @@ class EpisodesViewModel(app: Application) : AndroidViewModel(app) {
      * 只在 ViewModel 构造时决定这一次，转屏/切后台回来不重放；决策与排队全在
      * [AutoDownloadCoordinator] 里，界面只负责触发。
      */
-    private fun autoDownloadOnLaunch() {
-        viewModelScope.launch { loveqApp.autoDownload.run() }
+    private fun autoDownloadOnLaunch(indexEpochBeforeRefresh: Long? = null) {
+        viewModelScope.launch { loveqApp.autoDownload.run(indexEpochBeforeRefresh) }
     }
 
     fun switchCategory(category: Category) {

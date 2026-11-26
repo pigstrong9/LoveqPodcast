@@ -11,7 +11,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -33,6 +35,23 @@ class EpisodeIndexStore(context: Context, private val guard: RateLimitGuard) {
     private val _loading = MutableStateFlow(false)
     val loading: StateFlow<Boolean> = _loading
 
+    /**
+     * 推进代数：每跑完一轮 advance（含冷却/失败）就 +1，不区分发起方式。
+     */
+    private val _advanceEpoch = MutableStateFlow(0L)
+    val advanceEpoch: StateFlow<Long> = _advanceEpoch
+
+    /**
+     * 强制刷新代数：只有 respectTtl=false 的一轮跑完才 +1。
+     *
+     * 启动自动缓存必须等这个代数，而不是通用 [advanceEpoch]：后者会被启动时的
+     * 惰性刷新（respectTtl=true，缓存新鲜时一轮就收工）推进，那样等待方会误以为
+     * 「本次强制刷新已落地」，读到的却是昨天的旧索引——正好是本轮要修的 bug。
+     * 冷却中的强制一轮也算推进完成（只是没抓到数据），否则等待方会在限流时一直卡住。
+     */
+    private val _forcedEpoch = MutableStateFlow(0L)
+    val forcedEpoch: StateFlow<Long> = _forcedEpoch
+
     private var buildJob: Job? = null
     private var pagesDone = 0
     private var totalPagesKnown = 1
@@ -49,15 +68,34 @@ class EpisodeIndexStore(context: Context, private val guard: RateLimitGuard) {
         startIndexing(repository, respectTtl = true)
     }
 
-    fun refresh(repository: LoveqRepository) {
+    /**
+     * @return 本次强制刷新的代数基线，供 [awaitForcedAdvance] 等待。
+     *         即使已有 job 在跑也返回基线，调用方等不到（超时）就用现有索引照常继续。
+     */
+    fun refresh(repository: LoveqRepository): Long {
+        val baseline = _forcedEpoch.value
         if (buildJob?.isActive == true) {
-            // 推进循环已经在跑（可能正卡在冷却等待里）：给一次反馈，
-            // 但绝不另起一个任务去撞已经被拒的接口
-            if (guard.isBlocked()) announceCooldownOnce()
-            return
+            // 推进循环已经在跑：可能是启动时 respectTtl=true 的惰性刷新，
+            // 它跑完只会推进通用代数、不会推进强制代数。取消它以强制语义重跑，
+            // 保证「用户/自动缓存要求强制刷新」不被降级成零请求的启动语义。
+            // 取消不会额外撞接口：新 job 的 advanceIndex 开头照样检查官网冷却。
+            buildJob?.cancel()
         }
         startIndexing(repository, respectTtl = false)
+        return baseline
     }
+
+    /**
+     * 等强制刷新至少推进 [minEpoch] 代，超时返回 false。
+     *
+     * 启动自动缓存传 [refresh] 返回的基线：等到它增长，说明强制增量刷新已跑过一轮
+     * （新节目已进 [episodes]），再去算「当前期 → 最新」才不会漏。
+     * 限流中强制代数照样增长，所以这里不会卡死；超时则用现有索引照常继续。
+     */
+    suspend fun awaitForcedAdvance(minEpoch: Long, timeoutMs: Long): Boolean = withTimeoutOrNull(timeoutMs) {
+        _forcedEpoch.first { advanceReachedEpoch(it, minEpoch) }
+        true
+    } ?: false
 
     /**
      * 启动索引推进。
@@ -72,7 +110,18 @@ class EpisodeIndexStore(context: Context, private val guard: RateLimitGuard) {
         buildJob = scope.launch {
             runIndexLoop(
                 respectTtl = respectTtl,
-                advance = { advanceIndex(repository, it) }
+                advance = { ttl ->
+                    try {
+                        advanceIndex(repository, ttl)
+                    } finally {
+                        // 一轮结束就推进代数，成功/冷却/失败都算：等待方要的是
+                        // 「这次刷新已经试过了」，不能因限流永久卡住它
+                        _advanceEpoch.value += 1
+                        // 只有强制语义的轮次才算「本次刷新落地」。惰性刷新（启动时
+                        // 缓存新鲜直接收工）不能冒这个信号，否则自动缓存会读到旧索引。
+                        if (!ttl) _forcedEpoch.value += 1
+                    }
+                }
             )
         }
     }
@@ -314,3 +363,11 @@ class EpisodeIndexStore(context: Context, private val guard: RateLimitGuard) {
         const val RESUME_MARGIN_MS = 60_000L
     }
 }
+
+/**
+ * 等待方的代数判定：当前代数 [current] 是否已达到目标 [target]。
+ *
+ * 抽成纯函数便于 JVM 单测把「刚好达到 / 超过 / 还没到」钉死，避免等待条件写反
+ * 导致自动缓存读到旧索引、或永远等不到而白耗 12 秒超时。
+ */
+internal fun advanceReachedEpoch(current: Long, target: Long): Boolean = current >= target

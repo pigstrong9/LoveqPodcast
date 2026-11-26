@@ -2,7 +2,10 @@
 
 package cn.loveq.podcast.ui
 
+import android.content.Intent
 import android.graphics.BitmapFactory
+import android.net.Uri
+import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -13,6 +16,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
@@ -31,6 +35,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -77,6 +82,18 @@ internal fun LoginDialog(
     var error by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+
+    fun openRegisterPage() {
+        runCatching {
+            context.startActivity(
+                Intent(Intent.ACTION_VIEW, Uri.parse(REGISTER_URL))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+        }.onFailure {
+            Toast.makeText(context, "无法打开浏览器，请手动访问 loveq.cn 注册", Toast.LENGTH_LONG).show()
+        }
+    }
 
     fun refreshCaptcha() {
         scope.launch {
@@ -206,6 +223,29 @@ internal fun LoginDialog(
                         color = AppColors.RedDeep
                     )
                 }
+                Spacer(Modifier.height(16.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        "尚未注册？",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = AppColors.Muted
+                    )
+                    Text(
+                        "前往官网注册",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = AppColors.Red,
+                        fontWeight = FontWeight.Bold,
+                        // 车机是触控屏：bodySmall 的文字触控区只有十几 dp，误触率高。
+                        // 撑到 48dp 的可点击高度（≥ agent.md 的 44dp 底线），左右留padding 防相邻误点
+                        modifier = Modifier
+                            .heightIn(min = 48.dp)
+                            .padding(horizontal = 4.dp)
+                            .clickable(enabled = !loading) { openRegisterPage() }
+                    )
+                }
             }
         },
         confirmButton = {
@@ -232,6 +272,9 @@ internal fun LoginDialog(
         textContentColor = AppColors.Body
     )
 }
+
+/** 官网注册页：未注册用户从登录框点进来 */
+private const val REGISTER_URL = "https://loveq.cn/user-register.html"
 
 private fun ByteArray.toImageBitmap(): ImageBitmap? =
     runCatching {

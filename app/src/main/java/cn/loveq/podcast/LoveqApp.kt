@@ -58,7 +58,7 @@ class LoveqApp : Application() {
         indexStore = EpisodeIndexStore(this, rateLimitGuard)
         episodeCache = EpisodeCacheStore(this)
         queueStore = QueueStore(this)
-        downloads = DownloadManager(this, repository)
+        downloads = DownloadManager(this, repository, rateLimitGuard)
         autoDownload = AutoDownloadCoordinator(progressStore, indexStore, repository, downloads)
 
         // 夹具构建整个换掉 ReleaseSource，而不是给 GithubReleases 塞一个假基址：

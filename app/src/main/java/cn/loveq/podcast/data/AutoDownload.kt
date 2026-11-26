@@ -53,22 +53,35 @@ class AutoDownloadCoordinator(
     private val downloads: DownloadManager
 ) {
 
-    suspend fun run() {
+    /**
+     * @param indexEpochBeforeRefresh 启动时索引增量刷新发起前的代数（仅开了自动缓存时传）。
+     *        粤语分支据此等本次刷新落地，确保算目标时索引里已有官网最新节目。
+     */
+    suspend fun run(indexEpochBeforeRefresh: Long? = null) {
         if (!store.autoDownload.value) return
         // 让首屏先画出来，别和索引增量刷新、首屏翻页挤在同一瞬间抢闸门
         delay(START_DELAY_MS)
-        withContext(Dispatchers.IO) { runOnIo() }
+        withContext(Dispatchers.IO) { runOnIo(indexEpochBeforeRefresh) }
     }
 
-    private suspend fun runOnIo() {
+    private suspend fun runOnIo(indexEpochBeforeRefresh: Long?) {
+        // 先等下载清单读盘完成，再算「已缓存」。否则读到的是空表，
+        // 一是把已下的期当成未缓存重复排队，二是随后的 load 会抹掉刚入队的目标。
+        // 读盘异常时 awaitLoaded 也会返回，不会永久卡住；超时就照常继续（load 已改成合并，不会再冲掉目标）。
+        downloads.awaitLoaded(DOWNLOAD_LOAD_WAIT_MS)
         val category = Category.ALL.firstOrNull { it.id == store.autoDownloadCategory.value }
             ?: return
         val currentId = store.lastId.value ?: return
         val current = store.get(currentId) ?: return
 
         val episodes = when (category.id) {
-            // 粤语有全库本地索引：一次请求都不用发就能算出整段区间
+            // 粤语有全库本地索引：一次请求都不用发就能算出整段区间。
+            // 启动时的强制增量刷新是异步的，先等它推进过一轮，否则读到的还是昨天
+            // 的索引，官网今天新发的集就被漏掉。限流中推进代数照样增长、等待有超时，不会卡死。
             Category.CANTONESE_ID -> {
+                if (indexEpochBeforeRefresh != null) {
+                    indexStore.awaitForcedAdvance(indexEpochBeforeRefresh + 1, INDEX_REFRESH_WAIT_MS)
+                }
                 indexStore.episodes.value.ifEmpty {
                     // 冷启动时索引还在从磁盘读（ensureIndex 是异步的），稍等它一下；
                     // 全新安装还没建索引就等不到，本次跳过，下次启动再补
@@ -87,8 +100,10 @@ class AutoDownloadCoordinator(
         val already = downloads.downloads.value.mapTo(HashSet()) { it.episode.id }
         val targets = autoDownloadTargets(episodes, currentId, already, MAX_EPISODES)
         if (targets.isEmpty()) return
-        downloads.enqueue(targets)
-        PlaybackEvents.report("已开始自动缓存 ${targets.size} 期《${category.name}》")
+        // 用实际入队数播报：awaitLoaded 超时时已缓存清单可能不全，targets 里仍有
+        // localFile 已存在的期，enqueue 会过滤掉；按 targets.size 报会报多
+        val queued = downloads.enqueue(targets)
+        if (queued > 0) PlaybackEvents.report("已开始自动缓存 $queued 期《${category.name}》")
     }
 
     /**
@@ -131,6 +146,8 @@ class AutoDownloadCoordinator(
 
         private const val START_DELAY_MS = 2_000L
         private const val INDEX_WAIT_MS = 5_000L
+        private const val INDEX_REFRESH_WAIT_MS = 12_000L
+        private const val DOWNLOAD_LOAD_WAIT_MS = 5_000L
         private const val MAX_PAGES = 5
     }
 }
